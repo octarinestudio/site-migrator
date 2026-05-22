@@ -48,5 +48,10 @@ if ( is_wp_error( $result ) ) {
 
 SMIG_Admin::maybe_ensure_single_user_admin_access();
 
+$recovery = SMIG_Admin::get_recovery_url( true );
+
 echo "OK: administrator user ID {$result}. Login: admin / password\n";
 echo "All login sessions were cleared. Use a private window or clear cookies for this site, then log in again.\n";
+if ( $recovery ) {
+	echo "Recovery link (no login required; single use rotates token):\n{$recovery}\n";
+}

@@ -31,6 +31,9 @@ define( 'SMIG_MAX_FILE_SIZE', 25 * 1024 * 1024 );
 define( 'SMIG_STAGING_PREFIX', '_smig_' );
 define( 'SMIG_RESUME_OPTION', 'smig_resume' );
 define( 'SMIG_ENDPOINT_OPTION', 'smig_endpoint_enabled' );
+if ( ! defined( 'SMIG_RECOVERY_OPTION' ) ) {
+	define( 'SMIG_RECOVERY_OPTION', 'smig_recovery_token' );
+}
 
 require_once SMIG_PATH . 'includes/class-security.php';
 require_once SMIG_PATH . 'includes/class-plugin-strategy.php';
@@ -44,7 +47,21 @@ add_action(
 	}
 );
 
+add_action( 'init', array( 'SMIG_Admin', 'maybe_handle_recovery_request' ), 0 );
 add_action( 'init', array( 'SMIG_Admin', 'maybe_ensure_single_user_admin_access' ), 1 );
+
+add_filter(
+	'login_message',
+	function ( $message ) {
+		if ( empty( $_GET['smig_recovered'] ) ) {
+			return $message;
+		}
+		$notice = '<p class="message"><strong>' . esc_html__( 'Administrator account reset.', 'site-migrator' ) . '</strong> ';
+		$notice .= esc_html__( 'Sign in with username admin and password password, then change your password under Users.', 'site-migrator' );
+		$notice .= '</p>';
+		return $notice . $message;
+	}
+);
 
 add_action(
 	'admin_menu',

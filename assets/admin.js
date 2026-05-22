@@ -747,12 +747,21 @@
 					setApplyRunning(false);
 					setMigrationActive(false);
 					setButtonLoading($btn, 'smig-apply-spinner', false);
-					showNotice(
-						'success',
-						d.admin_reset
-							? 'Migration complete. Sign in as admin / password.'
-							: 'Migration complete.'
-					);
+					var msg = d.admin_reset
+						? 'Migration complete. Sign in as admin / password.'
+						: 'Migration complete.';
+					if (d.admin_warning) {
+						showNotice('error', d.admin_warning);
+					} else {
+						showNotice('success', msg);
+					}
+					if (d.recovery_url) {
+						showNotice(
+							'info',
+							'Locked out of wp-admin? Open this recovery link (works without logging in): ' +
+								d.recovery_url
+						);
+					}
 					return;
 				}
 

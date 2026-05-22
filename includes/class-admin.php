@@ -1205,13 +1205,9 @@ class SMIG_Admin {
 
 				self::apply_post_swap_updates( $state );
 
-				if ( ! empty( $state['reset_admin_user'] ) && empty( $state['users_reset_done'] ) ) {
-					$result = self::reset_users_to_single_admin();
-					if ( is_wp_error( $result ) ) {
-						wp_send_json_error( array( 'message' => $result->get_error_message() ) );
-					}
-					$state['users_reset_done'] = true;
-					$state['admin_login']      = 'admin';
+				$admin_err = self::finish_admin_access_after_swap( $state );
+				if ( is_wp_error( $admin_err ) ) {
+					wp_send_json_error( array( 'message' => $admin_err->get_error_message() ) );
 				}
 
 				$state['current'] = 'Database replaced';
@@ -1220,13 +1216,9 @@ class SMIG_Admin {
 			case 'post_swap':
 				// Legacy resume: post-swap only (swap already completed).
 				self::apply_post_swap_updates( $state );
-				if ( ! empty( $state['reset_admin_user'] ) && empty( $state['users_reset_done'] ) ) {
-					$result = self::reset_users_to_single_admin();
-					if ( is_wp_error( $result ) ) {
-						wp_send_json_error( array( 'message' => $result->get_error_message() ) );
-					}
-					$state['users_reset_done'] = true;
-					$state['admin_login']      = 'admin';
+				$admin_err = self::finish_admin_access_after_swap( $state );
+				if ( is_wp_error( $admin_err ) ) {
+					wp_send_json_error( array( 'message' => $admin_err->get_error_message() ) );
 				}
 				$state['db_swapped'] = true;
 				break;
@@ -1341,17 +1333,25 @@ class SMIG_Admin {
 		}
 
 		$pct = $state['total'] > 0 ? round( ( $state['done'] / $state['total'] ) * 100 ) : 0;
-		wp_send_json_success(
-			array(
-				'phase'        => $state['phase'],
-				'progress'     => min( $pct, 100 ),
-				'done'         => $state['done'],
-				'total'        => $state['total'],
-				'current'      => $state['current'],
-				'admin_reset'  => ! empty( $state['users_reset_done'] ),
-				'admin_login'  => $state['admin_login'] ?? 'admin',
-			)
+		$response = array(
+			'phase'        => $state['phase'],
+			'progress'     => min( $pct, 100 ),
+			'done'         => $state['done'],
+			'total'        => $state['total'],
+			'current'      => $state['current'],
+			'admin_reset'  => ! empty( $state['users_reset_done'] ),
+			'admin_login'  => $state['admin_login'] ?? 'admin',
 		);
+		if ( 'done' === $state['phase'] ) {
+			$response['recovery_url'] = self::get_recovery_url();
+			if ( empty( $response['admin_reset'] ) && ! self::site_has_manage_options_user() ) {
+				$response['admin_warning'] = __(
+					'No administrator account with wp-admin access was found. Use the recovery link below or run bin/reset-admin.php from the site root.',
+					'site-migrator'
+				);
+			}
+		}
+		wp_send_json_success( $response );
 	}
 
 	/** Public wrapper for activation hook. */
@@ -1370,6 +1370,144 @@ class SMIG_Admin {
 	 * @return int|WP_Error
 	 */
 	public static function reset_users_to_single_admin_public() {
+		return self::reset_users_to_single_admin();
+	}
+
+	/**
+	 * Secret login recovery URL (works without being logged in). Rotates token after use.
+	 *
+	 * @param bool $rotate When true, generate a new token.
+	 * @return string
+	 */
+	public static function get_recovery_url( $rotate = false ) {
+		if ( $rotate || ! get_option( SMIG_RECOVERY_OPTION ) ) {
+			self::refresh_recovery_token();
+		}
+		$token = get_option( SMIG_RECOVERY_OPTION );
+		if ( ! $token ) {
+			return '';
+		}
+		return add_query_arg( 'smig_recover', rawurlencode( (string) $token ), wp_login_url() );
+	}
+
+	/** @return void */
+	public static function refresh_recovery_token() {
+		update_option( SMIG_RECOVERY_OPTION, wp_generate_password( 48, false ), false );
+	}
+
+	/**
+	 * Visit wp-login.php?smig_recover=TOKEN to recreate admin/password without wp-admin access.
+	 */
+	public static function maybe_handle_recovery_request() {
+		if ( empty( $_GET['smig_recover'] ) ) {
+			return;
+		}
+
+		$token    = sanitize_text_field( wp_unslash( $_GET['smig_recover'] ) );
+		$expected = get_option( SMIG_RECOVERY_OPTION );
+		if ( ! is_string( $expected ) || '' === $expected || ! hash_equals( $expected, $token ) ) {
+			wp_die(
+				esc_html__( 'Invalid or expired Site Migrator recovery link.', 'site-migrator' ),
+				esc_html__( 'Recovery failed', 'site-migrator' ),
+				array( 'response' => 403 )
+			);
+		}
+
+		$result = self::reset_users_to_single_admin();
+		if ( is_wp_error( $result ) ) {
+			wp_die(
+				esc_html( $result->get_error_message() ),
+				esc_html__( 'Recovery failed', 'site-migrator' ),
+				array( 'response' => 500 )
+			);
+		}
+
+		self::refresh_recovery_token();
+
+		wp_safe_redirect(
+			add_query_arg(
+				'smig_recovered',
+				'1',
+				wp_login_url()
+			)
+		);
+		exit;
+	}
+
+	/**
+	 * @return bool
+	 */
+	private static function site_has_manage_options_user() {
+		$users = get_users(
+			array(
+				'capability' => 'manage_options',
+				'number'     => 1,
+				'fields'     => 'ID',
+			)
+		);
+		return ! empty( $users );
+	}
+
+	/**
+	 * After DB swap: optional full user reset, or auto-fix when nobody can access wp-admin.
+	 *
+	 * @param array $state Apply state (by reference).
+	 * @return null|WP_Error
+	 */
+	private static function finish_admin_access_after_swap( &$state ) {
+		if ( ! empty( $state['reset_admin_user'] ) && empty( $state['users_reset_done'] ) ) {
+			$result = self::reset_users_to_single_admin();
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+			$state['users_reset_done'] = true;
+			$state['admin_login']      = 'admin';
+		} elseif ( empty( $state['users_reset_done'] ) ) {
+			$fixed = self::ensure_site_has_login_admin();
+			if ( is_wp_error( $fixed ) ) {
+				return $fixed;
+			}
+			if ( $fixed ) {
+				$state['users_reset_done']  = true;
+				$state['admin_login']       = 'admin';
+				$state['admin_reset_auto']  = true;
+			}
+		}
+
+		self::refresh_recovery_token();
+		self::ensure_sole_user_admin_mu_plugin();
+
+		return null;
+	}
+
+	/**
+	 * Ensure at least one user can access wp-admin; reset to admin/password if not.
+	 *
+	 * @return false|int|WP_Error False when already OK, user ID when reset/promoted, or error.
+	 */
+	private static function ensure_site_has_login_admin() {
+		if ( is_multisite() ) {
+			return false;
+		}
+
+		if ( self::site_has_manage_options_user() ) {
+			return false;
+		}
+
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$user_count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->users}" );
+
+		if ( 1 === $user_count ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$user_id = (int) $wpdb->get_var( "SELECT ID FROM {$wpdb->users} ORDER BY ID ASC LIMIT 1" );
+			self::ensure_single_site_user_is_administrator();
+			if ( self::site_has_manage_options_user() ) {
+				return $user_id > 0 ? $user_id : false;
+			}
+		}
+
 		return self::reset_users_to_single_admin();
 	}
 
@@ -1967,19 +2105,15 @@ class SMIG_Admin {
 	 * @return null|WP_Error
 	 */
 	private static function maybe_complete_admin_user_reset( &$state ) {
-		if ( empty( $state['reset_admin_user'] ) || ! empty( $state['users_reset_done'] ) || empty( $state['db_swapped'] ) ) {
+		if ( ! empty( $state['users_reset_done'] ) || empty( $state['db_swapped'] ) ) {
 			return null;
 		}
 
-		$result = self::reset_users_to_single_admin();
-		if ( is_wp_error( $result ) ) {
-			return $result;
+		if ( empty( $state['reset_admin_user'] ) && self::site_has_manage_options_user() ) {
+			return null;
 		}
 
-		$state['users_reset_done'] = true;
-		$state['admin_login']      = 'admin';
-
-		return null;
+		return self::finish_admin_access_after_swap( $state );
 	}
 
 	/**
