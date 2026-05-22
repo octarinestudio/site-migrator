@@ -461,7 +461,7 @@ class SMIG_Source_API {
 				$scanned = array();
 				foreach ( $active as $pf ) {
 					$dir_name = dirname( $pf );
-					if ( 'site-migrator' === $dir_name ) {
+					if ( SMIG_Plugin_Strategy::SELF_PLUGIN_SLUG === $dir_name ) {
 						continue; // Don't transfer ourselves.
 					}
 					if ( '.' === $dir_name ) {

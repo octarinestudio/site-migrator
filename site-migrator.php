@@ -82,6 +82,7 @@ add_action(
 				'nonce'         => wp_create_nonce( 'smig_nonce' ),
 				'resume'        => SMIG_Admin::get_resume_for_client(),
 				'staged'        => SMIG_Admin::get_staged_download_for_client(),
+				'default_urls'  => SMIG_Admin::get_default_target_urls_for_client(),
 				'leave_warning' => __( 'A migration is in progress. Leaving this page will not stop it, but you should use Cancel and restart if you need to abort.', 'site-migrator' ),
 			)
 		);

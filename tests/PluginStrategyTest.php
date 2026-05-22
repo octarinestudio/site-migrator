@@ -145,6 +145,39 @@ class PluginStrategyTest extends SMIG_TestCase {
 		$this->assertSame( array(), SMIG_Plugin_Strategy::filter_plugin_files_by_slug( $files, array() ) );
 	}
 
+	public function test_is_site_migrator_plugin_path_detects_directory_and_root_file() {
+		$this->assertTrue( SMIG_Plugin_Strategy::is_site_migrator_plugin_path( 'site-migrator/includes/class-admin.php' ) );
+		$this->assertTrue( SMIG_Plugin_Strategy::is_site_migrator_plugin_path( 'site-migrator/site-migrator.php' ) );
+		$this->assertFalse( SMIG_Plugin_Strategy::is_site_migrator_plugin_path( 'akismet/akismet.php' ) );
+		$this->assertTrue( SMIG_Plugin_Strategy::is_site_migrator_plugin_path( '../site-migrator/foo.php' ) );
+	}
+
+	public function test_filter_file_queue_never_includes_site_migrator_plugin_files() {
+		$all_files = array(
+			array(
+				'type' => 'plugins',
+				'path' => 'site-migrator/site-migrator.php',
+			),
+			array(
+				'type' => 'plugins',
+				'path' => 'other-plugin/other-plugin.php',
+			),
+		);
+
+		$result = SMIG_Plugin_Strategy::filter_file_queue(
+			array(),
+			$all_files,
+			array(
+				'wporg_install'     => false,
+				'skip_same_version' => false,
+			)
+		);
+
+		$paths = array_column( $result['files'], 'path' );
+		$this->assertNotContains( 'site-migrator/site-migrator.php', $paths );
+		$this->assertContains( 'other-plugin/other-plugin.php', $paths );
+	}
+
 	public function test_filter_plugin_files_by_slug_handles_single_file_plugin_path() {
 		$files = array(
 			array( 'path' => 'hello.php' ),

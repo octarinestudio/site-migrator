@@ -643,11 +643,43 @@
 		cancelMigration($(this), spinner);
 	});
 
+	function targetUrlPayload() {
+		var custom = $('#smig-opt-custom-url').is(':checked');
+		return {
+			custom_target_url: custom ? '1' : '0',
+			target_siteurl: $('#smig-target-siteurl').val(),
+			target_home: $('#smig-target-home').val(),
+		};
+	}
+
+	function initTargetUrlFields() {
+		if (!smig.default_urls) {
+			return;
+		}
+		$('#smig-target-siteurl').val(smig.default_urls.siteurl || '');
+		$('#smig-target-home').val(smig.default_urls.home || '');
+	}
+
 	function runApplyChunks($btn) {
-		ajax('smig_apply_chunk', {
-			session_id: state.sessionId,
-			reset_admin_user: $('#smig-opt-reset-admin').is(':checked') ? '1' : '0',
-		})
+		if ($('#smig-opt-custom-url').is(':checked') && !$('#smig-target-siteurl').val().trim()) {
+			showNotice('error', 'Enter a target Site URL or turn off the URL override.');
+			setButtonLoading($btn, 'smig-apply-spinner', false);
+			setApplyRunning(false);
+			return;
+		}
+
+		ajax(
+			'smig_apply_chunk',
+			$.extend(
+				{
+					session_id: state.sessionId,
+					reset_admin_user: $('#smig-opt-reset-admin').is(':checked')
+						? '1'
+						: '0',
+				},
+				targetUrlPayload()
+			)
+		)
 			.done(function (res) {
 				if (!res.success) {
 					showNotice(
@@ -802,6 +834,11 @@
 		}
 	}
 
+	$('#smig-opt-custom-url').on('change', function () {
+		$('#smig-target-url-fields').prop('hidden', !$(this).is(':checked'));
+	});
+
+	initTargetUrlFields();
 	setupBeforeUnload();
 	initFromResume();
 	initFromStaged();
