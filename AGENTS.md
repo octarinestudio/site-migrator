@@ -75,7 +75,7 @@ curl -sS -H "X-Migrator-Auth: YOUR_AUTH_CODE" "https://SOURCE-SITE.example/wp-js
 
 ## Never
 
-- Commit `migrator-staging/`, SQL dumps, `.env`, or auth codes.
+- Commit `migrator-staging/`, SQL dumps, `.env`, auth codes, `vendor/`, `node_modules/`, or `package-lock.json`.
 - Set `sslverify` to false by default.
 - Expose `source_auth` in browser-visible JSON on resume.
 - Add customer-specific URLs in examples (use `https://example.com`).
