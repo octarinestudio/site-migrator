@@ -1,0 +1,30 @@
+# Development and CI (not shipped in release zip).
+.github/
+.git/
+.gitignore
+.distignore
+.wp-env.json
+.editorconfig
+.eslintrc.cjs
+package.json
+package-lock.json
+node_modules/
+composer.json
+composer.lock
+phpcs.xml.dist
+phpstan.neon.dist
+phpunit.xml.dist
+bin/
+tests/
+vendor/
+.phpunit.cache/
+.phpunit.result.cache
+
+# AI / contributor docs (optional in zip; keep readme.txt + LICENSE).
+AGENTS.md
+CLAUDE.md
+README.md
+SECURITY.md
+docs/
+.claude/
+.cursor/

@@ -43,7 +43,7 @@ class SMIG_Security {
 		if ( ! preg_match( '#^https?://#i', $url ) ) {
 			$url = 'https://' . ltrim( $url, '/' );
 		}
-		$url = untrailingslashit( $url );
+		$url     = untrailingslashit( $url );
 		$wp_json = strpos( $url, '/wp-json' );
 		if ( false !== $wp_json ) {
 			$url = untrailingslashit( substr( $url, 0, $wp_json ) );
@@ -83,8 +83,8 @@ class SMIG_Security {
 	 * @return true|WP_Error
 	 */
 	public static function check_rate_limit() {
-		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
-		$key = 'smig_rl_' . md5( $ip );
+		$ip    = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
+		$key   = 'smig_rl_' . md5( $ip );
 		$count = (int) get_transient( $key );
 		if ( $count >= self::RATE_LIMIT_MAX ) {
 			return new WP_Error(
@@ -100,13 +100,13 @@ class SMIG_Security {
 	/**
 	 * Generic error for JSON responses; details only when WP_DEBUG.
 	 *
-	 * @param string $public  User-facing message.
+	 * @param string $message User-facing message.
 	 * @param string $detail  Optional debug detail.
 	 */
-	public static function public_error_message( $public, $detail = '' ) {
+	public static function public_error_message( $message, $detail = '' ) {
 		if ( defined( 'WP_DEBUG' ) && WP_DEBUG && $detail ) {
-			return $public . ' ' . $detail;
+			return $message . ' ' . $detail;
 		}
-		return $public;
+		return $message;
 	}
 }

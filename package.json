@@ -1,0 +1,19 @@
+{
+	"name": "site-migrator",
+	"version": "1.0.0",
+	"private": true,
+	"description": "Pull-based WordPress site migration plugin",
+	"license": "GPL-3.0-or-later",
+	"scripts": {
+		"lint:js": "eslint \"assets/**/*.js\"",
+		"lint:js:fix": "eslint \"assets/**/*.js\" --fix",
+		"wp-env:start": "wp-env start",
+		"wp-env:stop": "wp-env stop",
+		"wp-env:cli": "wp-env run cli"
+	},
+	"devDependencies": {
+		"@wordpress/env": "^10.28.0",
+		"@wordpress/eslint-plugin": "^22.22.0",
+		"eslint": "^8.57.1"
+	}
+}

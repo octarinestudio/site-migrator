@@ -12,6 +12,7 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 }
 
 delete_option( 'smig_auth_code' );
+delete_option( 'smig_endpoint_enabled' );
 delete_option( 'smig_resume' );
 
 global $wpdb;

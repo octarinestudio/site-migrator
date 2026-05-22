@@ -1,0 +1,16 @@
+parameters:
+	level: 5
+	parallel:
+		maximumNumberOfProcesses: 1
+	paths:
+		- site-migrator.php
+		- uninstall.php
+		- includes
+	excludePaths:
+		- vendor
+	bootstrapFiles:
+		- tests/phpstan-bootstrap.php
+	ignoreErrors:
+		-
+			message: '#Found usage of constant WP_(SITEURL|HOME)#'
+			path: includes/class-admin.php
