@@ -231,6 +231,61 @@ class SMIG_Admin {
 							<div id="smig-apply-summary"></div>
 							<fieldset class="smig-options">
 								<legend class="screen-reader-text"><?php esc_html_e( 'After apply', 'site-migrator' ); ?></legend>
+								<?php
+								$default_target_urls = self::resolve_target_site_urls( true );
+								?>
+								<label for="smig-opt-custom-url">
+									<input type="checkbox" id="smig-opt-custom-url" />
+									<?php esc_html_e( 'Set target site URL on apply', 'site-migrator' ); ?>
+								</label>
+								<p class="description">
+									<?php esc_html_e( 'Updates siteurl and home in the database and search-replaces the source URL in content — same as wp option update and wp search-replace.', 'site-migrator' ); ?>
+								</p>
+								<div id="smig-target-url-fields" class="smig-target-url-fields" hidden>
+									<table class="form-table" role="presentation">
+										<tr>
+											<th scope="row">
+												<label for="smig-target-siteurl"><?php esc_html_e( 'Site URL', 'site-migrator' ); ?></label>
+											</th>
+											<td>
+												<input
+													type="url"
+													class="large-text code"
+													id="smig-target-siteurl"
+													value="<?php echo esc_attr( $default_target_urls['siteurl'] ); ?>"
+													placeholder="https://your-site.test"
+												/>
+											</td>
+										</tr>
+										<tr>
+											<th scope="row">
+												<label for="smig-target-home"><?php esc_html_e( 'Home URL', 'site-migrator' ); ?></label>
+											</th>
+											<td>
+												<input
+													type="url"
+													class="large-text code"
+													id="smig-target-home"
+													value="<?php echo esc_attr( $default_target_urls['home'] ); ?>"
+													placeholder="https://your-site.test"
+												/>
+												<p class="description">
+													<?php esc_html_e( 'Leave empty to use the same value as Site URL.', 'site-migrator' ); ?>
+												</p>
+											</td>
+										</tr>
+									</table>
+									<p class="description" id="smig-target-url-default-hint">
+										<?php
+										if ( defined( 'WP_SITEURL' ) || defined( 'WP_HOME' ) ) {
+											esc_html_e( 'Defaults come from WP_SITEURL / WP_HOME in wp-config.php.', 'site-migrator' );
+										} else {
+											esc_html_e( 'Defaults come from this site’s current settings or URL.', 'site-migrator' );
+										}
+										?>
+									</p>
+								</div>
+								<br />
 								<label for="smig-opt-reset-admin">
 									<input type="checkbox" id="smig-opt-reset-admin" checked="checked" />
 									<?php esc_html_e( 'Replace all users with a single administrator (login: admin, password: password)', 'site-migrator' ); ?>
@@ -885,12 +940,27 @@ class SMIG_Admin {
 		$state = get_transient( $akey );
 		if ( ! $state ) {
 			$reset_admin = ! empty( $_POST['reset_admin_user'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['reset_admin_user'] ) );
-			$state       = self::init_apply_state( $sid, $reset_admin );
+			$target_urls = self::resolve_target_urls_from_request();
+			if ( is_wp_error( $target_urls ) ) {
+				wp_send_json_error( array( 'message' => $target_urls->get_error_message() ) );
+			}
+			$state = self::init_apply_state( $sid, $reset_admin, $target_urls );
 			if ( is_wp_error( $state ) ) {
 				wp_send_json_error( array( 'message' => $state->get_error_message() ) );
 			}
-		} elseif ( isset( $_POST['reset_admin_user'] ) ) {
-			$state['reset_admin_user'] = ( '1' === sanitize_text_field( wp_unslash( $_POST['reset_admin_user'] ) ) );
+		} else {
+			if ( isset( $_POST['reset_admin_user'] ) ) {
+				$state['reset_admin_user'] = ( '1' === sanitize_text_field( wp_unslash( $_POST['reset_admin_user'] ) ) );
+			}
+			if ( empty( $state['db_swapped'] ) ) {
+				$target_urls = self::resolve_target_urls_from_request();
+				if ( is_wp_error( $target_urls ) ) {
+					wp_send_json_error( array( 'message' => $target_urls->get_error_message() ) );
+				}
+				$state['target_siteurl']     = $target_urls['siteurl'];
+				$state['target_home']        = $target_urls['home'];
+				$state['custom_target_url']  = $target_urls['custom'];
+			}
 		}
 
 		global $wpdb;
@@ -1105,6 +1175,12 @@ class SMIG_Admin {
 						++$batch;
 						continue;
 					}
+					if ( 'plugins' === $type && SMIG_Plugin_Strategy::is_site_migrator_plugin_path( $path ) ) {
+						++$state['file_idx'];
+						++$state['done'];
+						++$batch;
+						continue;
+					}
 					$subdir = 'theme' === $type ? 'themes' : $type;
 					$src    = SMIG_STAGING_DIR . '/' . $subdir . '/' . $path;
 
@@ -1286,9 +1362,10 @@ class SMIG_Admin {
 	/**
 	 * @param string $sid          Session id.
 	 * @param bool   $reset_admin  Replace all users with admin/password after apply.
+	 * @param array  $target_urls  siteurl, home, and optional custom flag.
 	 * @return array|WP_Error
 	 */
-	private static function init_apply_state( $sid, $reset_admin = false ) {
+	private static function init_apply_state( $sid, $reset_admin = false, $target_urls = null ) {
 		$manifest_file = SMIG_STAGING_DIR . '/manifest.json';
 		if ( ! file_exists( $manifest_file ) ) {
 			return new WP_Error( 'no_staging', 'No staging data found. Please download first.' );
@@ -1308,12 +1385,16 @@ class SMIG_Admin {
 			++$total;
 		}
 
-		$target_urls = self::resolve_target_site_urls( true );
+		if ( ! is_array( $target_urls ) ) {
+			$target_urls = self::resolve_target_site_urls( true );
+			$target_urls['custom'] = false;
+		}
 
 		$state = array(
 			'phase'            => 'create_staging',
 			'apply_version'    => 2,
 			'reset_admin_user' => $reset_admin,
+			'custom_target_url' => ! empty( $target_urls['custom'] ),
 			'tables'         => $tables,
 			'src_prefix'     => $manifest['prefix'],
 			'src_base_pfx'   => $manifest['base_prefix'],
@@ -1505,6 +1586,18 @@ class SMIG_Admin {
 			self::search_replace_table( $target_prefix . 'posts', 'post_content', $variant, $new_siteurl );
 			self::search_replace_table( $target_prefix . 'posts', 'guid', $variant, $new_siteurl );
 			self::search_replace_table( $target_prefix . 'postmeta', 'meta_value', $variant, $new_siteurl );
+		}
+
+		if ( $new_home !== $new_siteurl ) {
+			foreach ( self::url_replace_variants( $old_url ) as $variant ) {
+				if ( $variant === $new_home ) {
+					continue;
+				}
+				self::search_replace_table( $target_prefix . 'options', 'option_value', $variant, $new_home );
+				self::search_replace_table( $target_prefix . 'posts', 'post_content', $variant, $new_home );
+				self::search_replace_table( $target_prefix . 'posts', 'guid', $variant, $new_home );
+				self::search_replace_table( $target_prefix . 'postmeta', 'meta_value', $variant, $new_home );
+			}
 		}
 
 		$src_pfx = $state['src_prefix'];
@@ -1728,6 +1821,92 @@ class SMIG_Admin {
 		wp_cache_flush();
 
 		return $user_id;
+	}
+
+	/**
+	 * Target URLs from apply UI (checkbox + fields) or wp-config / current site defaults.
+	 *
+	 * @return array{siteurl: string, home: string, custom: bool}|WP_Error
+	 */
+	private static function resolve_target_urls_from_request() {
+		$defaults = self::resolve_target_site_urls( true );
+		$use_custom = ! empty( $_POST['custom_target_url'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['custom_target_url'] ) );
+
+		if ( ! $use_custom ) {
+			return array(
+				'siteurl' => $defaults['siteurl'],
+				'home'    => $defaults['home'],
+				'custom'  => false,
+			);
+		}
+
+		$siteurl_raw = isset( $_POST['target_siteurl'] ) ? sanitize_text_field( wp_unslash( $_POST['target_siteurl'] ) ) : '';
+		$home_raw    = isset( $_POST['target_home'] ) ? sanitize_text_field( wp_unslash( $_POST['target_home'] ) ) : '';
+
+		$siteurl = self::normalize_target_url( $siteurl_raw );
+		if ( is_wp_error( $siteurl ) ) {
+			return $siteurl;
+		}
+
+		if ( '' === trim( $home_raw ) ) {
+			$home = $siteurl;
+		} else {
+			$home = self::normalize_target_url( $home_raw );
+			if ( is_wp_error( $home ) ) {
+				return $home;
+			}
+		}
+
+		return array(
+			'siteurl' => $siteurl,
+			'home'    => $home,
+			'custom'  => true,
+		);
+	}
+
+	/**
+	 * Normalize a user-defined target URL (http/https, no trailing slash).
+	 *
+	 * @param string $url Raw URL.
+	 * @return string|WP_Error
+	 */
+	private static function normalize_target_url( $url ) {
+		$url = trim( (string) $url );
+		if ( '' === $url ) {
+			return new WP_Error(
+				'invalid_target_url',
+				__( 'Target Site URL is required when overriding URLs on apply.', 'site-migrator' )
+			);
+		}
+
+		if ( ! preg_match( '#^https?://#i', $url ) ) {
+			$url = 'https://' . ltrim( $url, '/' );
+		}
+
+		$url = untrailingslashit( esc_url_raw( $url ) );
+		if ( ! $url || ! wp_parse_url( $url, PHP_URL_HOST ) ) {
+			return new WP_Error(
+				'invalid_target_url',
+				__( 'Enter a valid target URL (including http:// or https://).', 'site-migrator' )
+			);
+		}
+
+		return $url;
+	}
+
+	/**
+	 * Default target URLs for admin.js (wp-config constants or current site).
+	 *
+	 * @return array{siteurl: string, home: string, from_wp_config: bool}
+	 */
+	public static function get_default_target_urls_for_client() {
+		$urls = self::resolve_target_site_urls( true );
+
+		return array(
+			'siteurl'         => $urls['siteurl'],
+			'home'            => $urls['home'],
+			'from_wp_config'  => defined( 'WP_SITEURL' ) || defined( 'WP_HOME' ),
+		);
 	}
 
 	/**

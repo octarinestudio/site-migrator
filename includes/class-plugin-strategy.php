@@ -14,6 +14,27 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class SMIG_Plugin_Strategy {
 
+	/** Plugin directory slug — never copy over the target's running migrator. */
+	const SELF_PLUGIN_SLUG = 'site-migrator';
+
+	/**
+	 * Whether a relative plugins path belongs to Site Migrator.
+	 *
+	 * @param string $path Path under wp-content/plugins/.
+	 */
+	public static function is_site_migrator_plugin_path( $path ) {
+		$path = ltrim( str_replace( '..', '', (string) $path ), '/' );
+		if ( '' === $path ) {
+			return false;
+		}
+
+		if ( 'site-migrator.php' === $path || self::SELF_PLUGIN_SLUG . '/site-migrator.php' === $path ) {
+			return true;
+		}
+
+		return self::SELF_PLUGIN_SLUG === self::plugin_dir_from_path( $path );
+	}
+
 	/**
 	 * @param array $plugins_detail From source manifest.
 	 * @param array $all_files      Full file queue.
@@ -66,7 +87,11 @@ class SMIG_Plugin_Strategy {
 				$filtered[] = $f;
 				continue;
 			}
-			$dir = self::plugin_dir_from_path( $f['path'] );
+			$file_path = $f['path'] ?? '';
+			if ( self::is_site_migrator_plugin_path( $file_path ) ) {
+				continue;
+			}
+			$dir = self::plugin_dir_from_path( $file_path );
 			if ( in_array( $dir, $skip_dirs, true ) ) {
 				continue;
 			}
