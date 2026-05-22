@@ -1034,6 +1034,11 @@ class SMIG_Admin {
 		switch ( $state['phase'] ) {
 
 			case 'create_staging':
+				if ( empty( $state['smig_old_dropped'] ) ) {
+					self::drop_smig_old_backup_tables();
+					$state['smig_old_dropped'] = true;
+				}
+
 				$batch       = 0;
 				$table_count = count( $state['tables'] );
 				while ( $state['tbl_idx'] < $table_count && $batch < 5 ) {
@@ -1147,6 +1152,8 @@ class SMIG_Admin {
 				break;
 
 			case 'swap':
+				self::drop_smig_old_backup_tables();
+
 				$target_prefix = $wpdb->prefix;
 				$renames       = array();
 
@@ -1603,6 +1610,29 @@ class SMIG_Admin {
 				'current'       => $state['current'] ?? '',
 			)
 		);
+	}
+
+	/**
+	 * Remove backup tables left by a previous failed apply (_smig_old_*).
+	 *
+	 * MySQL RENAME fails if the target old_* name already exists from an earlier run.
+	 */
+	private static function drop_smig_old_backup_tables() {
+		global $wpdb;
+
+		$needle     = SMIG_STAGING_PREFIX . 'old_';
+		$all_tables = $wpdb->get_col( 'SHOW TABLES' );
+		if ( ! is_array( $all_tables ) ) {
+			return;
+		}
+
+		foreach ( $all_tables as $table ) {
+			if ( 0 !== strpos( $table, $needle ) ) {
+				continue;
+			}
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange
+			$wpdb->query( "DROP TABLE IF EXISTS `{$table}`" );
+		}
 	}
 
 	private static function table_suffix( $table, $src_prefix, $src_base_prefix ) {
