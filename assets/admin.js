@@ -251,6 +251,77 @@
 		}
 	}
 
+	function stagedDetailText(staged) {
+		var parts = [];
+		if (staged.source_url) {
+			parts.push(' Source: ' + escapeHtml(staged.source_url) + '.');
+		}
+		if (staged.manifest_stats && staged.manifest_stats.files !== undefined) {
+			parts.push(
+				' ' + staged.manifest_stats.files + ' files staged for copy.'
+			);
+		}
+		return parts.join('');
+	}
+
+	function showStagedBanners(staged) {
+		var $banners = $('#smig-staged-banner, #smig-staged-banner-step3');
+		if (!staged || !staged.ready) {
+			$banners.prop('hidden', true);
+			return;
+		}
+		var detail = stagedDetailText(staged);
+		$('#smig-staged-banner-detail, #smig-staged-banner-step3-detail').html(
+			detail
+		);
+		$banners.prop('hidden', false);
+	}
+
+	function applyStagedToWizard(data) {
+		state.sessionId = data.session_id || state.sessionId;
+		state.sourceUrl = data.source_url || state.sourceUrl;
+		state.verified = true;
+		state.downloadComplete = true;
+		if (data.source_url) {
+			$('#smig-src-url').val(data.source_url);
+		}
+		if (data.manifest) {
+			renderManifest(data.manifest, data.manifest_stats || {});
+		}
+		renderApplySummary();
+		setStep(3);
+		setMigrationActive(true);
+		showStagedBanners({ ready: true, source_url: data.source_url, manifest_stats: data.manifest_stats });
+	}
+
+	function useStagedDownload($btn, spinnerId) {
+		hideNotices();
+		setButtonLoading($btn, spinnerId, true);
+		ajax('smig_use_staged_download')
+			.done(function (res) {
+				if (!res.success) {
+					showNotice(
+						'error',
+						res.data && res.data.message
+							? res.data.message
+							: 'Could not use downloaded content.'
+					);
+					return;
+				}
+				applyStagedToWizard(res.data);
+				showNotice(
+					'success',
+					'Downloaded content is ready. Review step 3 and click Replace all content when ready.'
+				);
+			})
+			.fail(function () {
+				showNotice('error', 'Request failed.');
+			})
+			.always(function () {
+				setButtonLoading($btn, spinnerId, false);
+			});
+	}
+
 	/* Copy buttons */
 	$(document).on('click', '.smig-copy', function () {
 		var id = $(this).data('target');
@@ -518,10 +589,28 @@
 			});
 	}
 
+	$('#smig-use-staged-btn, #smig-use-staged-btn-step3').on('click', function () {
+		var spinnerId =
+			$(this).attr('id') === 'smig-use-staged-btn-step3'
+				? 'smig-use-staged-spinner-step3'
+				: 'smig-use-staged-spinner';
+		useStagedDownload($(this), spinnerId);
+	});
+
 	/* Step 3: Apply */
 	$('#smig-apply-btn').on('click', function () {
-		if (!state.sessionId || !state.downloadComplete) {
-			showNotice('error', 'Complete the download first.');
+		if (!state.downloadComplete) {
+			showNotice(
+				'error',
+				'Complete the download first, or use Apply from downloaded content.'
+			);
+			return;
+		}
+		if (!state.sessionId) {
+			showNotice(
+				'error',
+				'No migration session. Use Apply from downloaded content or start a new download.'
+			);
 			return;
 		}
 
@@ -629,9 +718,23 @@
 		$('#smig-src-auth').val(state.sourceAuth);
 
 		if (r.expired) {
+			if (r.can_apply_staged || r.staged_ready) {
+				showNotice(
+					'info',
+					'Download session expired, but your files are still on this server. Use Apply from downloaded content.'
+				);
+				showStagedBanners({
+					ready: true,
+					source_url: r.source_url,
+					manifest_stats: r.manifest_stats,
+				});
+				setStep(2);
+				setMigrationActive(true);
+				return;
+			}
 			showNotice(
 				'warning',
-				'The download session expired, but staged files remain. Use Cancel and restart to begin again.'
+				'The download session expired and staged data looks incomplete. Cancel and restart, or finish downloading.'
 			);
 			setStep(2);
 			setMigrationActive(true);
@@ -671,11 +774,37 @@
 			setStep(3);
 			renderApplySummary();
 			setMigrationActive(true);
+		} else if (r.can_apply_staged || r.staged_ready) {
+			showStagedBanners({
+				ready: true,
+				source_url: r.source_url,
+				manifest_stats: r.manifest_stats,
+			});
+			setStep(2);
+			setMigrationActive(true);
+		}
+	}
+
+	function initFromStaged() {
+		if (!smig.staged) {
+			return;
+		}
+		if (smig.staged.ready) {
+			showStagedBanners(smig.staged);
+			if (!state.downloadComplete && !state.migrationActive) {
+				showNotice(
+					'info',
+					'Downloaded migration files were found in migrator-staging. You can apply without downloading again.'
+				);
+			}
+		} else if (smig.staged.message) {
+			showNotice('warning', smig.staged.message);
 		}
 	}
 
 	setupBeforeUnload();
 	initFromResume();
+	initFromStaged();
 
 	/* Step nav: view only completed steps */
 	$('#smig-step-nav').on('click', '.nav-tab', function (e) {
@@ -685,7 +814,11 @@
 			setStep(1);
 		} else if (step === 2 && state.verified) {
 			setStep(2);
-		} else if (step === 3 && state.downloadComplete) {
+		} else if (
+			step === 3 &&
+			(state.downloadComplete ||
+				(smig.staged && smig.staged.ready))
+		) {
 			setStep(3);
 		}
 	});

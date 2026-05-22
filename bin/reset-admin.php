@@ -12,9 +12,25 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
-	$wp_load = dirname( __DIR__, 4 ) . '/wp-load.php';
-	if ( ! is_readable( $wp_load ) ) {
-		fwrite( STDERR, "Could not find wp-load.php. Run via: wp eval-file ...\n" );
+	$wp_load = null;
+	$dir     = dirname( __DIR__ );
+	for ( $i = 0; $i < 8; $i++ ) {
+		$candidate = $dir . '/wp-load.php';
+		if ( is_readable( $candidate ) ) {
+			$wp_load = $candidate;
+			break;
+		}
+		$parent = dirname( $dir );
+		if ( $parent === $dir ) {
+			break;
+		}
+		$dir = $parent;
+	}
+	if ( ! $wp_load ) {
+		fwrite( STDERR, "Could not find wp-load.php. cd to your WordPress root, then run:\n" );
+		fwrite( STDERR, "  php wp-content/plugins/site-migrator/bin/reset-admin.php\n" );
+		fwrite( STDERR, "Or from this plugin folder:\n" );
+		fwrite( STDERR, "  php bin/reset-admin.php\n" );
 		exit( 1 );
 	}
 	require_once $wp_load;
@@ -29,3 +45,4 @@ if ( is_wp_error( $result ) ) {
 }
 
 echo "OK: administrator user ID {$result}. Login: admin / password\n";
+echo "Log out of any existing session, then log in again before opening wp-admin.\n";

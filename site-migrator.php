@@ -64,6 +64,7 @@ add_action( 'wp_ajax_smig_start_download', array( 'SMIG_Admin', 'ajax_start_down
 add_action( 'wp_ajax_smig_download_chunk', array( 'SMIG_Admin', 'ajax_download_chunk' ) );
 add_action( 'wp_ajax_smig_apply_chunk', array( 'SMIG_Admin', 'ajax_apply_chunk' ) );
 add_action( 'wp_ajax_smig_cancel_migration', array( 'SMIG_Admin', 'ajax_cancel_migration' ) );
+add_action( 'wp_ajax_smig_use_staged_download', array( 'SMIG_Admin', 'ajax_use_staged_download' ) );
 
 add_action(
 	'admin_enqueue_scripts',
@@ -80,6 +81,7 @@ add_action(
 				'ajax_url'      => admin_url( 'admin-ajax.php' ),
 				'nonce'         => wp_create_nonce( 'smig_nonce' ),
 				'resume'        => SMIG_Admin::get_resume_for_client(),
+				'staged'        => SMIG_Admin::get_staged_download_for_client(),
 				'leave_warning' => __( 'A migration is in progress. Leaving this page will not stop it, but you should use Cancel and restart if you need to abort.', 'site-migrator' ),
 			)
 		);
