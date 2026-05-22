@@ -1,0 +1,86 @@
+/**
+ * Site Migrator — minimal layout only; styling uses WordPress core classes.
+ *
+ * @package Site_Migrator
+ * @copyright Copyright (c) 2026 Octarine Studio
+ * @license GPL-3.0-or-later
+ * @link https://octarinestudio.uk/wordpress-site-migrator
+ */
+
+.metabox-holder .postbox {
+	margin-top: 12px;
+}
+
+.smig-step-panel {
+	display: none;
+	margin-top: 16px;
+}
+
+.smig-step-panel.active {
+	display: block;
+}
+
+.smig-step-panel h3 {
+	margin-top: 0;
+}
+
+#smig-step-nav .nav-tab {
+	cursor: default;
+}
+
+#smig-step-nav .nav-tab:not(.nav-tab-active) {
+	opacity: 0.65;
+}
+
+#smig-notices .notice {
+	margin: 12px 0 0;
+}
+
+.smig-progress-wrap {
+	margin-top: 12px;
+}
+
+.smig-progress-wrap progress {
+	width: 100%;
+	max-width: 600px;
+	height: 22px;
+	vertical-align: middle;
+}
+
+#smig-manifest .widefat {
+	margin-top: 8px;
+}
+
+.smig-options {
+	margin: 12px 0;
+	padding: 0;
+	border: none;
+}
+
+.smig-options label {
+	display: inline-block;
+	margin: 4px 0;
+}
+
+.smig-input-group {
+	display: flex;
+	align-items: stretch;
+	width: 100%;
+	max-width: 25em;
+}
+
+.smig-input-group input.large-text {
+	flex: 1;
+	min-width: 0;
+	width: auto;
+	margin: 0;
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+}
+
+.smig-input-group .button {
+	margin: 0;
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+	flex-shrink: 0;
+}

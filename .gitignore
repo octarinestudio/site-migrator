@@ -1,0 +1,13 @@
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.*
+.idea/
+.vscode/
+*.swp
+*~
+node_modules/
+vendor/
+/wp-content/migrator-staging/
+CLAUDE.local.md

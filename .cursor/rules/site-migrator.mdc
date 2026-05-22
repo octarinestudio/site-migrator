@@ -1,0 +1,46 @@
+---
+description: Site Migrator plugin — architecture, security, and WordPress conventions (Cursor IDE only)
+globs: "**/*"
+alwaysApply: false
+---
+
+# Site Migrator (Cursor)
+
+Codex uses `AGENTS.md`. Claude Code uses `CLAUDE.md` + `.claude/rules/`. See `docs/AI-TOOLS.md`.
+
+Read `AGENTS.md` and `SECURITY.md` before non-trivial changes.
+
+## Scope
+
+- Plugin path: `wp-content/plugins/site-migrator/`
+- Pull migration only; source REST + target admin AJAX.
+
+## Security
+
+- Never set `sslverify` to false by default; use `SMIG_Security::sslverify()`.
+- Never pass `source_auth` to `wp_localize_script` or front-end JSON.
+- Validate SQL identifiers with `SMIG_Security::is_valid_identifier()`.
+- Validate remote URLs with `SMIG_Security::validate_source_url()`.
+- Admin: `manage_options` + nonce `smig_nonce` on every AJAX handler.
+
+## Code style
+
+- GPL-3.0-or-later; copyright Octarine Studio on new PHP files.
+- i18n: `site-migrator` text domain.
+- Chunked AJAX; update `smig_resume` option when session state changes.
+- Use WordPress APIs (`Plugin_Upgrader`, `plugins_api`, transients, `wp_remote_get`).
+
+## Do not
+
+- Commit `migrator-staging/`, dumps, or auth codes.
+- Add customer-specific URLs to placeholders (use `https://example.com`).
+- Implement fixes without reproduction or log proof (see workspace No-Speculation rule).
+
+## Key files
+
+| Change | File |
+|--------|------|
+| REST source | `includes/class-source-api.php` |
+| Target wizard | `includes/class-admin.php`, `assets/admin.js` |
+| Plugin strategy | `includes/class-plugin-strategy.php` |
+| Security helpers | `includes/class-security.php` |

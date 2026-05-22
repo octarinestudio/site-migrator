@@ -1,0 +1,10 @@
+# Example snippets for ~/.codex/config.toml
+# https://developers.openai.com/codex/guides/agents-md
+#
+# Merge only the sections you need into your real config.
+
+# Optional: also treat CLAUDE.md as instruction file (this repo uses CLAUDE.md -> @AGENTS.md)
+# project_doc_fallback_filenames = ["CLAUDE.md"]
+
+# Raise if AGENTS.md + nested files exceed 32 KiB (default is 32768)
+# project_doc_max_bytes = 65536
