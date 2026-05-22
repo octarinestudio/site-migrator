@@ -28,7 +28,7 @@ From the plugin directory:
 
 ```bash
 composer install && composer check
-npm install && npm run lint:js
+npm ci && npm run lint:js
 ```
 
 Optional local WordPress (Docker): `npm run wp-env:start` — admin at http://localhost:8888/wp-admin (user `admin`, password `password`).
