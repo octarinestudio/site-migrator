@@ -720,6 +720,9 @@ class SMIG_Admin {
 				'manifest_stats'    => $staged['manifest_stats'] ?? ( $resume['manifest_stats'] ?? array() ),
 			)
 		);
+
+		// Download transient still present would keep the UI on step 2 with "Cancel and restart".
+		delete_transient( 'smig_session_' . $sid );
 	}
 
 	/**
@@ -1550,7 +1553,7 @@ class SMIG_Admin {
 			'current'           => $current,
 			'manifest'          => $manifest,
 			'manifest_stats'    => $resume['manifest_stats'] ?? array(),
-			'resume_download'   => (bool) $dl_state,
+			'resume_download'   => (bool) $dl_state && ! $download_complete,
 			'resume_apply'      => (bool) $apply_state,
 			'expired'           => $expired,
 			'staged_ready'      => $staged_ready,
@@ -1579,9 +1582,15 @@ class SMIG_Admin {
 				'status'            => $complete ? 'downloaded' : 'downloading',
 				'download_complete' => $complete,
 				'progress'          => $complete ? 100 : $pct,
-				'current'           => $state['current'] ?? '',
+				'current'           => $complete
+					? __( 'Ready to apply — open step 3', 'site-migrator' )
+					: ( $state['current'] ?? '' ),
 			)
 		);
+
+		if ( $complete && ! empty( $state['id'] ) ) {
+			delete_transient( 'smig_session_' . $state['id'] );
+		}
 	}
 
 	private static function sync_resume_from_apply( $state ) {

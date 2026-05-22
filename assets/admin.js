@@ -278,10 +278,14 @@
 	}
 
 	function applyStagedToWizard(data) {
+		data = data || {};
 		state.sessionId = data.session_id || state.sessionId;
 		state.sourceUrl = data.source_url || state.sourceUrl;
 		state.verified = true;
 		state.downloadComplete = true;
+		setDownloadRunning(false);
+		setApplyRunning(false);
+		$('#smig-dl-progress').prop('hidden', true);
 		if (data.source_url) {
 			$('#smig-src-url').val(data.source_url);
 		}
@@ -291,7 +295,11 @@
 		renderApplySummary();
 		setStep(3);
 		setMigrationActive(true);
-		showStagedBanners({ ready: true, source_url: data.source_url, manifest_stats: data.manifest_stats });
+		showStagedBanners({
+			ready: true,
+			source_url: data.source_url,
+			manifest_stats: data.manifest_stats,
+		});
 	}
 
 	function useStagedDownload($btn, spinnerId) {
@@ -570,14 +578,17 @@
 				);
 
 				if (d.phase === 'done') {
-					state.downloadComplete = true;
+					applyStagedToWizard({
+						session_id: state.sessionId,
+						source_url: state.sourceUrl,
+					});
 					$('#smig-dl-text').text('Download complete.');
 					$('#smig-dl-bar').val(100);
 					setSpinner('smig-dl-spinner', false);
-					setDownloadRunning(false);
-					renderApplySummary();
-					setStep(3);
-					setMigrationActive(true);
+					showNotice(
+						'info',
+						'Download complete. Review step 3 and click Replace all content.'
+					);
 					return;
 				}
 
@@ -773,15 +784,14 @@
 			if (r.can_apply_staged || r.staged_ready) {
 				showNotice(
 					'info',
-					'Download session expired, but your files are still on this server. Use Apply from downloaded content.'
+					'Download session expired, but your files are still on this server. Continue on step 3 to apply.'
 				);
-				showStagedBanners({
-					ready: true,
+				applyStagedToWizard({
+					session_id: r.session_id,
 					source_url: r.source_url,
+					manifest: r.manifest,
 					manifest_stats: r.manifest_stats,
 				});
-				setStep(2);
-				setMigrationActive(true);
 				return;
 			}
 			showNotice(
@@ -812,6 +822,20 @@
 			if (r.resume_apply) {
 				runApplyChunks($('#smig-apply-btn'));
 			}
+		} else if (
+			r.download_complete ||
+			r.can_apply_staged ||
+			r.staged_ready
+		) {
+			applyStagedToWizard({
+				session_id: r.session_id,
+				source_url: r.source_url,
+				manifest: r.manifest,
+				manifest_stats: r.manifest_stats,
+			});
+			if (r.current) {
+				showNotice('info', r.current);
+			}
 		} else if (r.resume_download) {
 			setStep(2);
 			$('#smig-dl-progress').prop('hidden', false);
@@ -822,18 +846,6 @@
 			setDownloadRunning(true);
 			setMigrationActive(true);
 			runDownloadChunks();
-		} else if (r.download_complete) {
-			setStep(3);
-			renderApplySummary();
-			setMigrationActive(true);
-		} else if (r.can_apply_staged || r.staged_ready) {
-			showStagedBanners({
-				ready: true,
-				source_url: r.source_url,
-				manifest_stats: r.manifest_stats,
-			});
-			setStep(2);
-			setMigrationActive(true);
 		}
 	}
 
