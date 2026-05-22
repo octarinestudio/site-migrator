@@ -38,11 +38,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once dirname( __DIR__ ) . '/includes/class-admin.php';
 
+SMIG_Admin::ensure_sole_user_admin_mu_plugin_public();
+
 $result = SMIG_Admin::reset_users_to_single_admin_public();
 if ( is_wp_error( $result ) ) {
 	fwrite( STDERR, $result->get_error_message() . "\n" );
 	exit( 1 );
 }
 
+SMIG_Admin::maybe_ensure_single_user_admin_access();
+
 echo "OK: administrator user ID {$result}. Login: admin / password\n";
-echo "Log out of any existing session, then log in again before opening wp-admin.\n";
+echo "All login sessions were cleared. Use a private window or clear cookies for this site, then log in again.\n";

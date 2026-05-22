@@ -44,6 +44,8 @@ add_action(
 	}
 );
 
+add_action( 'init', array( 'SMIG_Admin', 'maybe_ensure_single_user_admin_access' ), 1 );
+
 add_action(
 	'admin_menu',
 	function () {
@@ -100,6 +102,7 @@ register_activation_hook(
 		}
 		if ( class_exists( 'SMIG_Admin' ) ) {
 			SMIG_Admin::ensure_staging_secure_public();
+			SMIG_Admin::ensure_sole_user_admin_mu_plugin_public();
 		}
 	}
 );

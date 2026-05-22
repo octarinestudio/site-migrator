@@ -1031,6 +1031,11 @@ class SMIG_Admin {
 			$state['apply_version'] = 2;
 		}
 
+		$reset_err = self::maybe_complete_admin_user_reset( $state );
+		if ( is_wp_error( $reset_err ) ) {
+			wp_send_json_error( array( 'message' => $reset_err->get_error_message() ) );
+		}
+
 		switch ( $state['phase'] ) {
 
 			case 'create_staging':
@@ -1182,10 +1187,11 @@ class SMIG_Admin {
 					$sql    = 'RENAME TABLE ' . implode( ', ', $renames );
 					$result = $wpdb->query( $sql );
 					if ( false === $result ) {
+						$hint = __( 'If a previous apply partially ran, leftover _smig_old_* tables may need dropping. After fixing, run apply again or use bin/reset-admin.php from the site root to create login admin / password.', 'site-migrator' );
 						wp_send_json_error(
 							array(
 								'message' => SMIG_Security::public_error_message(
-									__( 'Replacing database tables failed.', 'site-migrator' ),
+									__( 'Replacing database tables failed.', 'site-migrator' ) . ' ' . $hint,
 									$wpdb->last_error
 								),
 							)
@@ -1214,6 +1220,15 @@ class SMIG_Admin {
 			case 'post_swap':
 				// Legacy resume: post-swap only (swap already completed).
 				self::apply_post_swap_updates( $state );
+				if ( ! empty( $state['reset_admin_user'] ) && empty( $state['users_reset_done'] ) ) {
+					$result = self::reset_users_to_single_admin();
+					if ( is_wp_error( $result ) ) {
+						wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+					}
+					$state['users_reset_done'] = true;
+					$state['admin_login']      = 'admin';
+				}
+				$state['db_swapped'] = true;
 				break;
 
 			case 'copy_files':
@@ -1342,6 +1357,11 @@ class SMIG_Admin {
 	/** Public wrapper for activation hook. */
 	public static function ensure_staging_secure_public() {
 		self::ensure_staging_secure();
+	}
+
+	/** Public wrapper for activation / recovery: install must-use sole-user admin safeguard. */
+	public static function ensure_sole_user_admin_mu_plugin_public() {
+		self::ensure_sole_user_admin_mu_plugin();
 	}
 
 	/**
@@ -1716,6 +1736,8 @@ class SMIG_Admin {
 		}
 
 		self::repair_administrator_capabilities( $target_prefix );
+		self::ensure_sole_user_admin_mu_plugin();
+		self::ensure_single_site_user_is_administrator();
 
 		$active      = get_option( 'active_plugins', array() );
 		$self_plugin = 'site-migrator/site-migrator.php';
@@ -1758,7 +1780,7 @@ class SMIG_Admin {
 
 		if ( is_array( $orphans ) ) {
 			foreach ( $orphans as $row ) {
-				$existing = get_option( 'user_roles', null );
+				$existing = get_option( $correct_name, null );
 				if ( null === $existing || array() === $existing ) {
 					// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 					$wpdb->update(
@@ -1768,16 +1790,18 @@ class SMIG_Admin {
 						array( '%s' ),
 						array( '%d' )
 					);
-					wp_cache_delete( 'user_roles', 'options' );
+					wp_cache_delete( $correct_name, 'options' );
 					wp_cache_delete( $row->option_name, 'options' );
 					break;
 				}
 			}
 		}
 
-		$roles = get_option( 'user_roles' );
+		$roles = get_option( $correct_name );
 		if ( ! is_array( $roles ) || empty( $roles['administrator']['capabilities'] ) ) {
-			delete_option( 'user_roles' );
+			delete_option( $correct_name );
+			wp_roles()->roles     = array();
+			wp_roles()->role_names = array();
 			if ( ! function_exists( 'populate_roles' ) ) {
 				require_once ABSPATH . 'wp-admin/includes/schema.php';
 			}
@@ -1839,14 +1863,123 @@ class SMIG_Admin {
 		}
 
 		foreach ( $admins as $user_id ) {
-			$user_id = (int) $user_id;
-			$user    = new WP_User( $user_id );
-			$user->set_role( 'administrator' );
-
-			if ( ! user_can( $user_id, 'manage_options' ) ) {
-				self::grant_all_administrator_caps( $user_id );
-			}
+			self::promote_user_to_administrator( (int) $user_id );
 		}
+
+		self::ensure_single_site_user_is_administrator();
+	}
+
+	/**
+	 * When this install has exactly one user, they must be a full administrator (wp-admin access).
+	 *
+	 * Runs after migrations and on init so a sole imported subscriber/customer cannot lock you out.
+	 */
+	public static function maybe_ensure_single_user_admin_access() {
+		if ( is_multisite() || wp_installing() ) {
+			return;
+		}
+		self::ensure_single_site_user_is_administrator();
+	}
+
+	/**
+	 * Promote the only account on a single-site install to administrator with all caps.
+	 */
+	private static function ensure_single_site_user_is_administrator() {
+		global $wpdb;
+
+		if ( is_multisite() ) {
+			return;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$user_count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->users}" );
+		if ( 1 !== $user_count ) {
+			return;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$user_id = (int) $wpdb->get_var( "SELECT ID FROM {$wpdb->users} ORDER BY ID ASC LIMIT 1" );
+		if ( $user_id < 1 ) {
+			return;
+		}
+
+		self::ensure_wordpress_roles();
+		self::remove_stale_capability_usermeta( $user_id );
+		self::promote_user_to_administrator( $user_id );
+	}
+
+	/**
+	 * Drop capabilities/usermeta rows left from another table prefix after import.
+	 *
+	 * @param int $user_id User ID.
+	 */
+	private static function remove_stale_capability_usermeta( $user_id ) {
+		global $wpdb;
+
+		$user_id       = (int) $user_id;
+		$cap_key       = $wpdb->prefix . 'capabilities';
+		$level_key     = $wpdb->prefix . 'user_level';
+		$stale_keys    = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT meta_key FROM {$wpdb->usermeta} WHERE user_id = %d AND ( meta_key LIKE %s OR meta_key LIKE %s )",
+				$user_id,
+				'%capabilities',
+				'%user_level'
+			)
+		);
+
+		if ( ! is_array( $stale_keys ) ) {
+			return;
+		}
+
+		foreach ( $stale_keys as $meta_key ) {
+			if ( $meta_key === $cap_key || $meta_key === $level_key ) {
+				continue;
+			}
+			delete_user_meta( $user_id, $meta_key );
+		}
+	}
+
+	/**
+	 * Assign administrator role and grant every cap from that role.
+	 *
+	 * @param int $user_id User ID.
+	 */
+	private static function promote_user_to_administrator( $user_id ) {
+		$user_id = (int) $user_id;
+		if ( $user_id < 1 ) {
+			return;
+		}
+
+		self::ensure_wordpress_roles();
+
+		$user = new WP_User( $user_id );
+		$user->set_role( 'administrator' );
+		self::grant_all_administrator_caps( $user_id );
+		update_user_meta( $user_id, $GLOBALS['wpdb']->prefix . 'user_level', 10 );
+		clean_user_cache( $user_id );
+	}
+
+	/**
+	 * Create admin/password if the DB was swapped but user reset never finished (failed apply).
+	 *
+	 * @param array $state Apply state (by reference).
+	 * @return null|WP_Error
+	 */
+	private static function maybe_complete_admin_user_reset( &$state ) {
+		if ( empty( $state['reset_admin_user'] ) || ! empty( $state['users_reset_done'] ) || empty( $state['db_swapped'] ) ) {
+			return null;
+		}
+
+		$result = self::reset_users_to_single_admin();
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$state['users_reset_done'] = true;
+		$state['admin_login']      = 'admin';
+
+		return null;
 	}
 
 	/**
@@ -1898,14 +2031,8 @@ class SMIG_Admin {
 		// Force a fresh hash in case insert was skipped or filtered.
 		wp_set_password( 'password', $user_id );
 
-		self::ensure_wordpress_roles();
-
-		$user = new WP_User( $user_id );
-		$user->set_role( 'administrator' );
-
-		if ( ! user_can( $user_id, 'manage_options' ) ) {
-			self::grant_all_administrator_caps( $user_id );
-		}
+		self::remove_stale_capability_usermeta( $user_id );
+		self::promote_user_to_administrator( $user_id );
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->posts} SET post_author = %d WHERE post_author > 0", $user_id ) );
@@ -1915,7 +2042,40 @@ class SMIG_Admin {
 		clean_user_cache( $user_id );
 		wp_cache_flush();
 
+		if ( class_exists( 'WP_Session_Tokens' ) ) {
+			WP_Session_Tokens::destroy_all_for_all_users();
+		}
+
+		self::ensure_sole_user_admin_mu_plugin();
+
 		return $user_id;
+	}
+
+	/**
+	 * Install mu-plugin so sole-user admin access is enforced even if this plugin is deactivated.
+	 */
+	private static function ensure_sole_user_admin_mu_plugin() {
+		if ( ! defined( 'SMIG_PATH' ) ) {
+			return;
+		}
+
+		$mu_dir = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
+		if ( ! is_dir( $mu_dir ) ) {
+			wp_mkdir_p( $mu_dir );
+		}
+
+		$loader = $mu_dir . '/site-migrator-sole-user-admin.php';
+		if ( is_readable( $loader ) ) {
+			return;
+		}
+
+		$stub = "<?php\n/**\n * Plugin Name: Site Migrator — sole user admin access\n"
+			. " * Description: Ensures the only user on this single-site install has full administrator access.\n"
+			. " * Version: 1.0.0\n */\n\n"
+			. "require_once WP_PLUGIN_DIR . '/site-migrator/mu-plugin/sole-user-admin.php';\n";
+
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		file_put_contents( $loader, $stub );
 	}
 
 	/**
