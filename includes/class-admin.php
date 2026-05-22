@@ -194,6 +194,18 @@ class SMIG_Admin {
 								<progress id="smig-dl-bar" max="100" value="0"></progress>
 								<p class="description" id="smig-dl-text"></p>
 							</div>
+							<div id="smig-staged-banner" class="notice notice-info inline" hidden>
+								<p>
+									<strong><?php esc_html_e( 'Downloaded content on this server', 'site-migrator' ); ?></strong>
+									<span id="smig-staged-banner-detail"></span>
+								</p>
+								<p>
+									<button type="button" class="button button-primary" id="smig-use-staged-btn">
+										<?php esc_html_e( 'Apply from downloaded content', 'site-migrator' ); ?>
+									</button>
+									<span class="spinner" id="smig-use-staged-spinner"></span>
+								</p>
+							</div>
 						</div>
 
 						<div class="smig-step-panel" id="smig-step-3">
@@ -202,6 +214,18 @@ class SMIG_Admin {
 								<p>
 									<strong><?php esc_html_e( 'Warning:', 'site-migrator' ); ?></strong>
 									<?php esc_html_e( 'This replaces all content on this site with the downloaded data. There is no undo. The current database and files will be overwritten.', 'site-migrator' ); ?>
+								</p>
+							</div>
+							<div id="smig-staged-banner-step3" class="notice notice-info inline" hidden>
+								<p>
+									<strong><?php esc_html_e( 'Downloaded content ready', 'site-migrator' ); ?></strong>
+									<span id="smig-staged-banner-step3-detail"></span>
+								</p>
+								<p>
+									<button type="button" class="button button-primary" id="smig-use-staged-btn-step3">
+										<?php esc_html_e( 'Use downloaded content', 'site-migrator' ); ?>
+									</button>
+									<span class="spinner" id="smig-use-staged-spinner-step3"></span>
 								</p>
 							</div>
 							<div id="smig-apply-summary"></div>
@@ -452,6 +476,7 @@ class SMIG_Admin {
 					'prefix'               => $manifest['prefix'],
 					'base_prefix'          => $manifest['base_prefix'],
 					'site_url'             => $manifest['site_url'],
+					'session_id'           => $session_id,
 					'all_files'            => $all_files,
 					'wporg_queue'          => $wporg_queue,
 					'plugins_skipped'      => $skipped,
@@ -512,6 +537,169 @@ class SMIG_Admin {
 		self::clean_staging();
 		self::clear_resume();
 		wp_send_json_success();
+	}
+
+	/**
+	 * AJAX — register an existing migrator-staging download for apply (skip re-download).
+	 */
+	public static function ajax_use_staged_download() {
+		check_ajax_referer( 'smig_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+
+		$staged = self::inspect_staged_download();
+		if ( empty( $staged['ready'] ) ) {
+			wp_send_json_error(
+				array(
+					'message' => $staged['message'] ?? __( 'No complete downloaded migration was found.', 'site-migrator' ),
+				)
+			);
+		}
+
+		$resume = get_option( SMIG_RESUME_OPTION, array() );
+		if ( ! is_array( $resume ) ) {
+			$resume = array();
+		}
+
+		$sid = '';
+		if ( ! empty( $resume['session_id'] ) ) {
+			$sid = (string) $resume['session_id'];
+		} elseif ( ! empty( $staged['session_id'] ) ) {
+			$sid = (string) $staged['session_id'];
+		}
+		if ( '' === $sid ) {
+			$sid = wp_generate_password( 16, false );
+		}
+
+		delete_transient( 'smig_session_' . $sid );
+		delete_transient( 'smig_apply_' . $sid );
+
+		self::save_resume(
+			array(
+				'session_id'        => $sid,
+				'source_url'        => $staged['source_url'] ?? '',
+				'download_complete' => true,
+				'apply_started'     => false,
+				'status'            => 'downloaded',
+				'progress'          => 100,
+				'current'           => __( 'Ready to apply from downloaded content', 'site-migrator' ),
+				'manifest_stats'    => $staged['manifest_stats'] ?? array(),
+			)
+		);
+
+		wp_send_json_success(
+			array(
+				'session_id'     => $sid,
+				'source_url'     => $staged['source_url'] ?? '',
+				'manifest'       => $staged['manifest'] ?? array(),
+				'manifest_stats' => $staged['manifest_stats'] ?? array(),
+			)
+		);
+	}
+
+	/**
+	 * Staged download summary for admin.js on page load.
+	 *
+	 * @return array|null
+	 */
+	public static function get_staged_download_for_client() {
+		$staged = self::inspect_staged_download();
+		if ( empty( $staged['detected'] ) ) {
+			return null;
+		}
+
+		return array(
+			'detected'         => true,
+			'ready'            => ! empty( $staged['ready'] ),
+			'message'          => $staged['message'] ?? '',
+			'source_url'       => $staged['source_url'] ?? '',
+			'manifest'         => $staged['manifest'] ?? null,
+			'manifest_stats'   => $staged['manifest_stats'] ?? array(),
+			'can_apply_staged' => ! empty( $staged['ready'] ),
+		);
+	}
+
+	/**
+	 * Validate wp-content/migrator-staging/ for a complete prior download.
+	 *
+	 * @return array{detected: bool, ready: bool, message?: string, source_url?: string, session_id?: string, manifest?: array, manifest_stats?: array}
+	 */
+	private static function inspect_staged_download() {
+		$manifest_path = SMIG_STAGING_DIR . '/manifest.json';
+		if ( ! file_exists( $manifest_path ) ) {
+			return array( 'detected' => false, 'ready' => false );
+		}
+
+		$stored = json_decode( (string) file_get_contents( $manifest_path ), true );
+		if ( ! is_array( $stored ) || empty( $stored['tables'] ) ) {
+			return array(
+				'detected' => true,
+				'ready'    => false,
+				'message'  => __( 'manifest.json is missing or invalid.', 'site-migrator' ),
+			);
+		}
+
+		$tables_dir = SMIG_STAGING_DIR . '/tables';
+		foreach ( $stored['tables'] as $tbl ) {
+			$name = $tbl['name'] ?? '';
+			if ( ! is_string( $name ) || '' === $name || ! self::assert_valid_table_name( $name ) ) {
+				return array(
+					'detected' => true,
+					'ready'    => false,
+					'message'  => __( 'Invalid table name in manifest.', 'site-migrator' ),
+				);
+			}
+
+			$schema = $tables_dir . '/' . $name . '.schema.sql';
+			if ( ! is_readable( $schema ) ) {
+				return array(
+					'detected' => true,
+					'ready'    => false,
+					'message'  => sprintf(
+						/* translators: %s: table name */
+						__( 'Missing schema for table %s. Re-download or finish the download first.', 'site-migrator' ),
+						$name
+					),
+				);
+			}
+
+			$row_count = isset( $tbl['rows'] ) ? (int) $tbl['rows'] : 0;
+			if ( $row_count > 0 ) {
+				$rows_file = $tables_dir . '/' . $name . '.rows.1.json';
+				if ( ! is_readable( $rows_file ) ) {
+					return array(
+						'detected' => true,
+						'ready'    => false,
+						'message'  => sprintf(
+							/* translators: %s: table name */
+							__( 'Missing row data for table %s. The download may still be in progress.', 'site-migrator' ),
+							$name
+						),
+					);
+				}
+			}
+		}
+
+		$files = $stored['all_files'] ?? array();
+		$stats = array(
+			'files'                => count( $files ),
+			'wporg_count'          => count( $stored['wporg_queue'] ?? array() ),
+			'skipped_count'        => count( $stored['plugins_skipped'] ?? array() ),
+			'plugin_files_removed' => (int) ( $stored['plugin_files_removed'] ?? 0 ),
+		);
+
+		return array(
+			'detected'         => true,
+			'ready'            => true,
+			'source_url'       => $stored['site_url'] ?? '',
+			'session_id'       => $stored['session_id'] ?? '',
+			'manifest'         => array(
+				'tables'     => $stored['tables'],
+				'file_types' => $stored['file_types'] ?? array(),
+			),
+			'manifest_stats'   => $stats,
+		);
 	}
 
 	/**
@@ -701,6 +889,8 @@ class SMIG_Admin {
 			if ( is_wp_error( $state ) ) {
 				wp_send_json_error( array( 'message' => $state->get_error_message() ) );
 			}
+		} elseif ( isset( $_POST['reset_admin_user'] ) ) {
+			$state['reset_admin_user'] = ( '1' === sanitize_text_field( wp_unslash( $_POST['reset_admin_user'] ) ) );
 		}
 
 		global $wpdb;
@@ -882,6 +1072,15 @@ class SMIG_Admin {
 
 				self::apply_post_swap_updates( $state );
 
+				if ( ! empty( $state['reset_admin_user'] ) && empty( $state['users_reset_done'] ) ) {
+					$result = self::reset_users_to_single_admin();
+					if ( is_wp_error( $result ) ) {
+						wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+					}
+					$state['users_reset_done'] = true;
+					$state['admin_login']      = 'admin';
+				}
+
 				$state['current'] = 'Database replaced';
 				break;
 
@@ -967,17 +1166,6 @@ class SMIG_Admin {
 				break;
 
 			case 'cleanup':
-				if ( ! empty( $state['reset_admin_user'] ) && empty( $state['users_reset_done'] ) ) {
-					$result = self::reset_users_to_single_admin();
-					if ( is_wp_error( $result ) ) {
-						wp_send_json_error( array( 'message' => $result->get_error_message() ) );
-					}
-					$state['users_reset_done'] = true;
-					$state['admin_login']      = 'admin';
-					++$state['done'];
-					$state['current'] = __( 'Administrator account created', 'site-migrator' );
-				}
-
 				$all_tables = $wpdb->get_col( 'SHOW TABLES' );
 				foreach ( $all_tables as $t ) {
 					if ( 0 === strpos( $t, SMIG_STAGING_PREFIX ) ) {
@@ -1174,7 +1362,9 @@ class SMIG_Admin {
 			return null;
 		}
 
-		$expired = $has_staging && ! $dl_state && ! $apply_state && empty( $resume['download_complete'] );
+		$staged_info       = self::inspect_staged_download();
+		$staged_ready      = ! empty( $staged_info['ready'] );
+		$expired           = $has_staging && ! $dl_state && ! $apply_state && empty( $resume['download_complete'] ) && ! $staged_ready;
 
 		$manifest = null;
 		if ( $has_staging ) {
@@ -1189,6 +1379,9 @@ class SMIG_Admin {
 
 		$download_complete = ! empty( $resume['download_complete'] );
 		if ( $dl_state && 'done' === ( $dl_state['phase'] ?? '' ) ) {
+			$download_complete = true;
+		}
+		if ( $staged_ready && ! $apply_state ) {
 			$download_complete = true;
 		}
 
@@ -1223,6 +1416,8 @@ class SMIG_Admin {
 			'resume_download'   => (bool) $dl_state,
 			'resume_apply'      => (bool) $apply_state,
 			'expired'           => $expired,
+			'staged_ready'      => $staged_ready,
+			'can_apply_staged'  => $staged_ready && ! $apply_state,
 		);
 	}
 
@@ -1358,12 +1553,84 @@ class SMIG_Admin {
 	}
 
 	/**
+	 * Ensure {prefix}user_roles exists so the administrator role grants real caps (e.g. manage_options).
+	 */
+	private static function ensure_wordpress_roles() {
+		global $wpdb;
+
+		$correct_name = $wpdb->prefix . 'user_roles';
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$orphans = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT option_id, option_name, option_value FROM {$wpdb->options} WHERE option_name LIKE %s AND option_name <> %s",
+				'%user_roles',
+				$correct_name
+			)
+		);
+
+		if ( is_array( $orphans ) ) {
+			foreach ( $orphans as $row ) {
+				$existing = get_option( 'user_roles', null );
+				if ( null === $existing || array() === $existing ) {
+					// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+					$wpdb->update(
+						$wpdb->options,
+						array( 'option_name' => $correct_name ),
+						array( 'option_id' => (int) $row->option_id ),
+						array( '%s' ),
+						array( '%d' )
+					);
+					wp_cache_delete( 'user_roles', 'options' );
+					wp_cache_delete( $row->option_name, 'options' );
+					break;
+				}
+			}
+		}
+
+		$roles = get_option( 'user_roles' );
+		if ( ! is_array( $roles ) || empty( $roles['administrator']['capabilities'] ) ) {
+			delete_option( 'user_roles' );
+			if ( ! function_exists( 'populate_roles' ) ) {
+				require_once ABSPATH . 'wp-admin/includes/schema.php';
+			}
+			populate_roles();
+		}
+
+		if ( function_exists( 'wp_roles' ) ) {
+			wp_roles()->for_site();
+		}
+	}
+
+	/**
+	 * Grant every capability from the administrator role to a user.
+	 *
+	 * @param int $user_id User ID.
+	 */
+	private static function grant_all_administrator_caps( $user_id ) {
+		self::ensure_wordpress_roles();
+
+		$role = get_role( 'administrator' );
+		if ( ! $role || empty( $role->capabilities ) ) {
+			return;
+		}
+
+		$user = new WP_User( $user_id );
+		foreach ( $role->capabilities as $cap => $grant ) {
+			if ( $grant ) {
+				$user->add_cap( $cap );
+			}
+		}
+	}
+
+	/**
 	 * Ensure imported users have a valid administrator capabilities row for this table prefix.
 	 *
 	 * @param string $table_prefix Target $wpdb->prefix.
 	 */
 	private static function repair_administrator_capabilities( $table_prefix ) {
 		global $wpdb;
+
+		self::ensure_wordpress_roles();
 
 		$cap_key = $table_prefix . 'capabilities';
 		$admins  = get_users(
@@ -1385,8 +1652,12 @@ class SMIG_Admin {
 
 		foreach ( $admins as $user_id ) {
 			$user_id = (int) $user_id;
-			update_user_meta( $user_id, $cap_key, array( 'administrator' => true ) );
-			update_user_meta( $user_id, $table_prefix . 'user_level', 10 );
+			$user    = new WP_User( $user_id );
+			$user->set_role( 'administrator' );
+
+			if ( ! user_can( $user_id, 'manage_options' ) ) {
+				self::grant_all_administrator_caps( $user_id );
+			}
 		}
 	}
 
@@ -1405,35 +1676,48 @@ class SMIG_Admin {
 			);
 		}
 
-		if ( ! function_exists( 'wp_insert_user' ) ) {
-			require_once ABSPATH . 'wp-admin/includes/user.php';
-		}
+		require_once ABSPATH . 'wp-admin/includes/user.php';
 
 		$host  = wp_parse_url( home_url(), PHP_URL_HOST );
 		$host  = $host ? $host : 'localhost';
-		$email = 'admin@' . $host;
+		$email = 'admin@' . preg_replace( '/[^a-zA-Z0-9.-]/', '', $host );
+
+		$user_ids = $wpdb->get_col( "SELECT ID FROM {$wpdb->users}" );
+		if ( is_array( $user_ids ) ) {
+			foreach ( $user_ids as $uid ) {
+				if ( function_exists( 'wp_delete_user' ) ) {
+					wp_delete_user( (int) $uid, true );
+				}
+			}
+		}
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$wpdb->query( "DELETE FROM {$wpdb->usermeta}" );
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$wpdb->query( "DELETE FROM {$wpdb->users}" );
 
-		$user_id = wp_insert_user(
-			array(
-				'user_login'   => 'admin',
-				'user_pass'    => 'password',
-				'user_email'   => $email,
-				'display_name' => 'Administrator',
-				'role'         => 'administrator',
-			)
-		);
+		// wp_create_user() hashes the plain-text password (WordPress standard).
+		$user_id = wp_create_user( 'admin', 'password', $email );
 
 		if ( is_wp_error( $user_id ) ) {
-			return $user_id;
+			$existing = get_user_by( 'login', 'admin' );
+			if ( ! $existing ) {
+				return $user_id;
+			}
+			$user_id = (int) $existing->ID;
 		}
+
+		// Force a fresh hash in case insert was skipped or filtered.
+		wp_set_password( 'password', $user_id );
+
+		self::ensure_wordpress_roles();
 
 		$user = new WP_User( $user_id );
 		$user->set_role( 'administrator' );
+
+		if ( ! user_can( $user_id, 'manage_options' ) ) {
+			self::grant_all_administrator_caps( $user_id );
+		}
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->posts} SET post_author = %d WHERE post_author > 0", $user_id ) );
