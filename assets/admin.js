@@ -153,7 +153,10 @@
 				')</td></tr>';
 		}
 		if (stats.files !== undefined) {
-			html += '<tr><td>Files to pull</td><td>' + stats.files + ' files</td></tr>';
+			html +=
+				'<tr><td>Files to pull</td><td>' +
+				stats.files +
+				' files</td></tr>';
 		}
 		if (stats.wporg_count) {
 			html +=
@@ -176,7 +179,8 @@
 		html += '</tbody></table>';
 
 		$('#smig-manifest').html(
-			'<div class="notice notice-info inline"><p><strong>Ready to download</strong></p></div>' + html
+			'<div class="notice notice-info inline"><p><strong>Ready to download</strong></p></div>' +
+				html
 		);
 	}
 
@@ -216,9 +220,17 @@
 			.done(function (res) {
 				if (res.success) {
 					resetWizard();
-					showNotice('success', 'Migration cancelled. You can start again.');
+					showNotice(
+						'success',
+						'Migration cancelled. You can start again.'
+					);
 				} else {
-					showNotice('error', res.data && res.data.message ? res.data.message : 'Cancel failed.');
+					showNotice(
+						'error',
+						res.data && res.data.message
+							? res.data.message
+							: 'Cancel failed.'
+					);
 				}
 			})
 			.fail(function () {
@@ -250,6 +262,48 @@
 		copyToClipboard(String(text).trim());
 	});
 
+	function setShareCredentialsInactive(inactive) {
+		$('.smig-share-credentials').toggleClass('smig-share-inactive', !!inactive);
+	}
+
+	/* Enable / disable pull endpoint on this site */
+	$('#smig-endpoint-enabled').on('change', function () {
+		var $checkbox = $(this);
+		var enabled = $checkbox.is(':checked');
+		var previous = !enabled;
+		hideNotices();
+		setShareCredentialsInactive(!enabled);
+		setButtonLoading($checkbox, 'smig-endpoint-spinner', true);
+		ajax('smig_save_endpoint', { enabled: enabled ? '1' : '0' })
+			.done(function (res) {
+				if (res.success) {
+					showNotice(
+						'success',
+						enabled
+							? 'Migration endpoint enabled. Share the site URL and auth code with the target site.'
+							: 'Migration endpoint disabled. This site cannot be pulled until you enable it again.'
+					);
+				} else {
+					$checkbox.prop('checked', previous);
+					setShareCredentialsInactive(previous);
+					showNotice(
+						'error',
+						res.data && res.data.message
+							? res.data.message
+							: 'Could not update endpoint setting.'
+					);
+				}
+			})
+			.fail(function () {
+				$checkbox.prop('checked', previous);
+				setShareCredentialsInactive(previous);
+				showNotice('error', 'Request failed.');
+			})
+			.always(function () {
+				setButtonLoading($checkbox, 'smig-endpoint-spinner', false);
+			});
+	});
+
 	/* Regenerate auth code */
 	$('#smig-regen-btn').on('click', function () {
 		if (
@@ -270,7 +324,9 @@
 				} else {
 					showNotice(
 						'error',
-						res.data && res.data.message ? res.data.message : 'Could not regenerate code.'
+						res.data && res.data.message
+							? res.data.message
+							: 'Could not regenerate code.'
 					);
 				}
 			})
@@ -314,7 +370,9 @@
 				if (!res.success) {
 					showNotice(
 						'error',
-						res.data && res.data.message ? res.data.message : 'Verification failed.'
+						res.data && res.data.message
+							? res.data.message
+							: 'Verification failed.'
 					);
 					return;
 				}
@@ -323,7 +381,9 @@
 				state.verified = true;
 
 				var ms = d.is_multisite
-					? ' Multisite, blog ID ' + escapeHtml(String(d.blog_id)) + '.'
+					? ' Multisite, blog ID ' +
+						escapeHtml(String(d.blog_id)) +
+						'.'
 					: '';
 
 				$('#smig-verify-result').html(
@@ -373,13 +433,17 @@
 			source_url: state.sourceUrl,
 			source_auth: state.sourceAuth,
 			wporg_install: $('#smig-opt-wporg').is(':checked') ? '1' : '0',
-			skip_same_version: $('#smig-opt-skip-same').is(':checked') ? '1' : '0',
+			skip_same_version: $('#smig-opt-skip-same').is(':checked')
+				? '1'
+				: '0',
 		})
 			.done(function (res) {
 				if (!res.success) {
 					showNotice(
 						'error',
-						res.data && res.data.message ? res.data.message : 'Download failed to start.'
+						res.data && res.data.message
+							? res.data.message
+							: 'Download failed to start.'
 					);
 					setButtonLoading($btn, 'smig-dl-spinner', false);
 					return;
@@ -413,7 +477,9 @@
 				if (!res.success) {
 					showNotice(
 						'error',
-						res.data && res.data.message ? res.data.message : 'Download chunk failed.'
+						res.data && res.data.message
+							? res.data.message
+							: 'Download chunk failed.'
 					);
 					setSpinner('smig-dl-spinner', false);
 					return;
@@ -422,7 +488,14 @@
 				var d = res.data;
 				$('#smig-dl-bar').val(d.progress);
 				$('#smig-dl-text').text(
-					d.progress + '% — ' + (d.current || '') + ' (' + d.done + '/' + d.total + ')'
+					d.progress +
+						'% — ' +
+						(d.current || '') +
+						' (' +
+						d.done +
+						'/' +
+						d.total +
+						')'
 				);
 
 				if (d.phase === 'done') {
@@ -485,7 +558,12 @@
 		ajax('smig_apply_chunk', { session_id: state.sessionId })
 			.done(function (res) {
 				if (!res.success) {
-					showNotice('error', res.data && res.data.message ? res.data.message : 'Apply failed.');
+					showNotice(
+						'error',
+						res.data && res.data.message
+							? res.data.message
+							: 'Apply failed.'
+					);
 					setButtonLoading($btn, 'smig-apply-spinner', false);
 					return;
 				}
@@ -493,7 +571,14 @@
 				var d = res.data;
 				$('#smig-apply-bar').val(d.progress);
 				$('#smig-apply-text').text(
-					d.progress + '% — ' + (d.current || '') + ' (' + d.done + '/' + d.total + ')'
+					d.progress +
+						'% — ' +
+						(d.current || '') +
+						' (' +
+						d.done +
+						'/' +
+						d.total +
+						')'
 				);
 
 				if (d.phase === 'done') {

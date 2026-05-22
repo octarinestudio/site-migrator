@@ -18,15 +18,15 @@ class SMIG_Plugin_Strategy {
 	 * @param array $plugins_detail From source manifest.
 	 * @param array $all_files      Full file queue.
 	 * @param array $opts           wporg_install, skip_same_version (bool).
-	 * @return array{files: array, wporg_queue: array, skipped: array, pulled_plugin_dirs: array}
+	 * @return array{files: array, wporg_queue: array, skipped: array, skip_dirs: array}
 	 */
 	public static function filter_file_queue( $plugins_detail, $all_files, $opts ) {
-		$wporg_install       = ! empty( $opts['wporg_install'] );
-		$skip_same_version   = ! empty( $opts['skip_same_version'] );
-		$skip_dirs           = array();
-		$wporg_queue         = array();
-		$skipped             = array();
-		$local               = self::local_plugins_by_slug();
+		$wporg_install     = ! empty( $opts['wporg_install'] );
+		$skip_same_version = ! empty( $opts['skip_same_version'] );
+		$skip_dirs         = array();
+		$wporg_queue       = array();
+		$skipped           = array();
+		$local             = self::local_plugins_by_slug();
 
 		foreach ( $plugins_detail as $plugin ) {
 			$slug    = $plugin['slug'];
@@ -47,7 +47,7 @@ class SMIG_Plugin_Strategy {
 			}
 
 			if ( $wporg_install && ! empty( $plugin['wporg'] ) ) {
-				$skip_dirs[] = $slug;
+				$skip_dirs[]   = $slug;
 				$wporg_queue[] = array(
 					'slug'    => $slug,
 					'version' => $version,
@@ -102,7 +102,7 @@ class SMIG_Plugin_Strategy {
 	}
 
 	/**
-	 * @param array  $files      Plugin file entries from files-list.
+	 * @param array    $files      Plugin file entries from files-list.
 	 * @param string[] $pull_slugs Directory slugs to include.
 	 * @return array
 	 */
@@ -191,13 +191,13 @@ class SMIG_Plugin_Strategy {
 			}
 
 			$data    = get_plugin_data( $full, false, false );
-			$version = isset( $data['Version'] ) ? (string) $data['Version'] : '';
+			$version = (string) $data['Version'];
 
 			$details[] = array(
 				'file'    => $plugin_file,
 				'slug'    => $slug,
 				'version' => $version,
-				'name'    => isset( $data['Name'] ) ? (string) $data['Name'] : $slug,
+				'name'    => (string) $data['Name'],
 				'wporg'   => self::is_on_wordpress_org( $slug ),
 			);
 		}
@@ -267,7 +267,7 @@ class SMIG_Plugin_Strategy {
 
 		$map = array();
 		foreach ( get_plugins() as $file => $data ) {
-			$slug          = self::slug_from_plugin_file( $file );
+			$slug         = self::slug_from_plugin_file( $file );
 			$map[ $slug ] = array(
 				'version' => isset( $data['Version'] ) ? (string) $data['Version'] : '',
 				'file'    => $file,

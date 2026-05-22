@@ -9,5 +9,9 @@ Thumbs.db
 *~
 node_modules/
 vendor/
+.phpunit.cache/
+.phpunit.result.cache
+phpunit.xml
+phpstan.neon
 /wp-content/migrator-staging/
 CLAUDE.local.md

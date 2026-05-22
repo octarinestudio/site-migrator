@@ -22,6 +22,17 @@ Pull-based WordPress migration: install on source and target, share a site URL +
 
 Read [SECURITY.md](SECURITY.md). The auth code grants full read access to the source site. Never commit staging data or secrets to this repository.
 
+## Development
+
+From the plugin directory:
+
+```bash
+composer install && composer check
+npm ci && npm run lint:js
+```
+
+Optional local WordPress (Docker): `npm run wp-env:start` — admin at http://localhost:8888/wp-admin (user `admin`, password `password`).
+
 ## Repository hygiene
 
 This repo must **not** contain:

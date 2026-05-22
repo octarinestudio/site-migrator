@@ -44,6 +44,7 @@ This plugin is a **full-site export/import tool**. Anyone who knows the source *
 | Item | Location | Notes |
 |------|----------|-------|
 | Auth code | `wp_options.smig_auth_code` | Regenerate after migration |
+| Pull endpoint | `wp_options.smig_endpoint_enabled` | Off by default; enable only while acting as a source |
 | Resume state | `wp_options.smig_resume` | Includes source URL; auth in option for server resume only |
 | Staging | `wp-content/migrator-staging/` | Full DB/files until apply or cancel; **not** committed to git |
 

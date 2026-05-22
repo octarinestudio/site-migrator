@@ -14,10 +14,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class SMIG_Admin {
 
-	/* ================================================================
-	 *  ADMIN PAGE
-	 * ============================================================= */
-
+	/**
+	 * ADMIN PAGE
+	 */
 	public function render_page() {
 		// Ensure auth code exists.
 		$auth_code = get_option( 'smig_auth_code' );
@@ -26,9 +25,11 @@ class SMIG_Admin {
 			update_option( 'smig_auth_code', $auth_code, false );
 		}
 
-		$site_url  = untrailingslashit( home_url() );
-		$site_name = get_bloginfo( 'name' );
-		$blog_id   = get_current_blog_id();
+		$site_url          = untrailingslashit( home_url() );
+		$site_name         = get_bloginfo( 'name' );
+		$blog_id           = get_current_blog_id();
+		$endpoint_enabled  = self::is_pull_endpoint_enabled();
+		$share_row_class   = $endpoint_enabled ? '' : ' smig-share-inactive';
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'Site Migrator', 'site-migrator' ); ?></h1>
@@ -49,6 +50,24 @@ class SMIG_Admin {
 						</p>
 						<table class="form-table" role="presentation">
 							<tr>
+								<th scope="row"><?php esc_html_e( 'Allow pulls', 'site-migrator' ); ?></th>
+								<td>
+									<label for="smig-endpoint-enabled">
+										<input
+											type="checkbox"
+											id="smig-endpoint-enabled"
+											value="1"
+											<?php checked( $endpoint_enabled ); ?>
+										/>
+										<?php esc_html_e( 'Enable migration endpoint', 'site-migrator' ); ?>
+									</label>
+									<p class="description">
+										<?php esc_html_e( 'When off, other sites cannot pull from this site. You can still pull from other sites below.', 'site-migrator' ); ?>
+									</p>
+									<span class="spinner" id="smig-endpoint-spinner"></span>
+								</td>
+							</tr>
+							<tr class="smig-share-credentials<?php echo esc_attr( $share_row_class ); ?>">
 								<th scope="row">
 									<label for="smig-site-url"><?php esc_html_e( 'Site URL', 'site-migrator' ); ?></label>
 								</th>
@@ -59,7 +78,7 @@ class SMIG_Admin {
 									</div>
 								</td>
 							</tr>
-							<tr>
+							<tr class="smig-share-credentials<?php echo esc_attr( $share_row_class ); ?>">
 								<th scope="row">
 									<label for="smig-auth-code"><?php esc_html_e( 'Auth code', 'site-migrator' ); ?></label>
 								</th>
@@ -222,10 +241,35 @@ class SMIG_Admin {
 		<?php
 	}
 
-	/* ================================================================
-	 *  AJAX — regenerate auth code
-	 * ============================================================= */
+	/**
+	 * Whether this site exposes the REST pull endpoint to remote targets.
+	 */
+	public static function is_pull_endpoint_enabled() {
+		return (bool) get_option( SMIG_ENDPOINT_OPTION, false );
+	}
 
+	/**
+	 * AJAX — save pull endpoint enabled state.
+	 */
+	public static function ajax_save_endpoint() {
+		check_ajax_referer( 'smig_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+
+		$enabled = ! empty( $_POST['enabled'] ) && '1' === $_POST['enabled'];
+		update_option( SMIG_ENDPOINT_OPTION, $enabled ? '1' : '0', false );
+
+		wp_send_json_success(
+			array(
+				'enabled' => $enabled,
+			)
+		);
+	}
+
+	/**
+	 * AJAX — regenerate auth code
+	 */
 	public static function ajax_regenerate_code() {
 		check_ajax_referer( 'smig_nonce', 'nonce' );
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -236,14 +280,17 @@ class SMIG_Admin {
 		wp_send_json_success( array( 'code' => $code ) );
 	}
 
-	/* ================================================================
-	 *  AJAX — verify source
-	 * ============================================================= */
-
+	/**
+	 * AJAX — verify source
+	 */
 	public static function ajax_verify_source() {
 		check_ajax_referer( 'smig_nonce', 'nonce' );
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+
+		if ( empty( $_POST['source_url'] ) || empty( $_POST['source_auth'] ) ) {
+			wp_send_json_error( array( 'message' => __( 'Source URL and auth code are required.', 'site-migrator' ) ) );
 		}
 
 		$url = self::normalize_source_url( esc_url_raw( wp_unslash( $_POST['source_url'] ) ) );
@@ -260,14 +307,17 @@ class SMIG_Admin {
 		wp_send_json_success( $resp );
 	}
 
-	/* ================================================================
-	 *  AJAX — start download (fetch manifest, create session)
-	 * ============================================================= */
-
+	/**
+	 * AJAX — start download (fetch manifest, create session)
+	 */
 	public static function ajax_start_download() {
 		check_ajax_referer( 'smig_nonce', 'nonce' );
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+
+		if ( empty( $_POST['source_url'] ) || empty( $_POST['source_auth'] ) ) {
+			wp_send_json_error( array( 'message' => __( 'Source URL and auth code are required.', 'site-migrator' ) ) );
 		}
 
 		$url = self::normalize_source_url( esc_url_raw( wp_unslash( $_POST['source_url'] ) ) );
@@ -276,7 +326,7 @@ class SMIG_Admin {
 		}
 		$auth = sanitize_text_field( wp_unslash( $_POST['source_auth'] ) );
 
-		/* ── Fetch manifest ──────────────────────────────────────── */
+		// Fetch manifest.
 		$manifest = self::remote( $url, 'manifest', $auth, 60 );
 		if ( is_wp_error( $manifest ) ) {
 			wp_send_json_error( array( 'message' => 'Manifest: ' . $manifest->get_error_message() ) );
@@ -293,7 +343,7 @@ class SMIG_Admin {
 			? SMIG_Plugin_Strategy::plugins_requiring_file_pull( $plugins_detail, $plugin_opts )
 			: null;
 
-		/* ── Fetch full file lists ───────────────────────────────── */
+		// Fetch full file lists.
 		$all_files = array();
 		foreach ( array( 'uploads', 'theme', 'plugins' ) as $type ) {
 			if ( 'plugins' === $type && $has_plugin_meta && empty( $pull_slugs ) ) {
@@ -327,7 +377,7 @@ class SMIG_Admin {
 		$plugin_files_before = 0;
 		foreach ( $all_files as $f ) {
 			if ( 'plugins' === $f['type'] ) {
-				$plugin_files_before++;
+				++$plugin_files_before;
 			}
 		}
 
@@ -338,12 +388,12 @@ class SMIG_Admin {
 		$plugin_files_after = 0;
 		foreach ( $all_files as $f ) {
 			if ( 'plugins' === $f['type'] ) {
-				$plugin_files_after++;
+				++$plugin_files_after;
 			}
 		}
 		$plugin_files_removed = max( 0, $plugin_files_before - $plugin_files_after );
 
-		/* ── Prepare staging dir ─────────────────────────────────── */
+		// Prepare staging dir.
 		self::clean_staging();
 		self::ensure_staging_secure();
 		wp_mkdir_p( SMIG_STAGING_DIR . '/tables' );
@@ -351,15 +401,15 @@ class SMIG_Admin {
 		wp_mkdir_p( SMIG_STAGING_DIR . '/themes' );
 		wp_mkdir_p( SMIG_STAGING_DIR . '/plugins' );
 
-		/* ── Calculate total work items ──────────────────────────── */
+		// Calculate total work items.
 		$total = 0;
 		foreach ( $manifest['tables'] as $t ) {
-			$total += 1; // schema
+			++$total; // Table schema.
 			$total += max( 1, (int) ceil( $t['rows'] / SMIG_ROWS_PER_PAGE ) );
 		}
 		$total += count( $all_files );
 
-		/* ── Build session state ─────────────────────────────────── */
+		// Build session state.
 		$session_id = wp_generate_password( 16, false );
 		$state      = array(
 			'id'           => $session_id,
@@ -431,10 +481,9 @@ class SMIG_Admin {
 		);
 	}
 
-	/* ================================================================
-	 *  AJAX — cancel migration and clear staging
-	 * ============================================================= */
-
+	/**
+	 * AJAX — cancel migration and clear staging
+	 */
 	public static function ajax_cancel_migration() {
 		check_ajax_referer( 'smig_nonce', 'nonce' );
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -452,12 +501,15 @@ class SMIG_Admin {
 		wp_send_json_success();
 	}
 
-	/* ================================================================
-	 *  AJAX — download one chunk
-	 * ============================================================= */
-
+	/**
+	 * AJAX — download one chunk
+	 */
 	public static function ajax_download_chunk() {
 		check_ajax_referer( 'smig_nonce', 'nonce' );
+
+		if ( empty( $_POST['session_id'] ) ) {
+			wp_send_json_error( array( 'message' => __( 'Session ID is required.', 'site-migrator' ) ) );
+		}
 
 		$sid   = sanitize_text_field( wp_unslash( $_POST['session_id'] ) );
 		$state = get_transient( 'smig_session_' . $sid );
@@ -472,7 +524,7 @@ class SMIG_Admin {
 
 		switch ( $state['phase'] ) {
 
-			/* ── TABLE SCHEMA ──────────────────────────────────── */
+			// Table schema.
 			case 'table_schema':
 				$tbl = $tables[ $state['tbl_idx'] ];
 				$res = self::remote( $url, 'table-schema', $auth, 30, array( 'table' => $tbl['name'] ) );
@@ -486,7 +538,7 @@ class SMIG_Admin {
 					$res['create_sql']
 				);
 
-				$state['done']++;
+				++$state['done'];
 				$state['current'] = 'Schema: ' . $tbl['name'];
 
 				if ( $tbl['rows'] > 0 ) {
@@ -495,14 +547,19 @@ class SMIG_Admin {
 				} else {
 					file_put_contents(
 						SMIG_STAGING_DIR . '/tables/' . $tbl['name'] . '.rows.1.json',
-						wp_json_encode( array( 'columns' => array(), 'rows' => array() ) )
+						wp_json_encode(
+							array(
+								'columns' => array(),
+								'rows'    => array(),
+							)
+						)
 					);
-					$state['done']++;
-					$state         = self::advance_table( $state );
+					++$state['done'];
+					$state = self::advance_table( $state );
 				}
 				break;
 
-			/* ── TABLE ROWS ────────────────────────────────────── */
+			// Table rows.
 			case 'table_rows':
 				$tbl = $tables[ $state['tbl_idx'] ];
 				$res = self::remote(
@@ -532,17 +589,17 @@ class SMIG_Admin {
 					)
 				);
 
-				$state['done']++;
+				++$state['done'];
 				$state['current'] = $tbl['name'] . ' rows ' . $state['tbl_page'] . '/' . $res['total_pages'];
 
 				if ( $state['tbl_page'] >= $res['total_pages'] ) {
 					$state = self::advance_table( $state );
 				} else {
-					$state['tbl_page']++;
+					++$state['tbl_page'];
 				}
 				break;
 
-			/* ── FILES ─────────────────────────────────────────── */
+			// Files.
 			case 'files':
 				if ( $state['file_idx'] >= count( $state['all_files'] ) ) {
 					$state['phase'] = 'done';
@@ -552,8 +609,8 @@ class SMIG_Admin {
 				$file = $state['all_files'][ $state['file_idx'] ];
 
 				if ( $file['size'] > SMIG_MAX_FILE_SIZE ) {
-					$state['file_idx']++;
-					$state['done']++;
+					++$state['file_idx'];
+					++$state['done'];
 					$state['current'] = 'Skipped (>25 MB): ' . basename( $file['path'] );
 					break;
 				}
@@ -570,8 +627,8 @@ class SMIG_Admin {
 				);
 
 				if ( is_wp_error( $res ) ) {
-					$state['file_idx']++;
-					$state['done']++;
+					++$state['file_idx'];
+					++$state['done'];
 					$state['current'] = 'Error: ' . basename( $file['path'] );
 					break;
 				}
@@ -581,8 +638,8 @@ class SMIG_Admin {
 				wp_mkdir_p( dirname( $dest ) );
 				file_put_contents( $dest, base64_decode( $res['content'] ) );
 
-				$state['file_idx']++;
-				$state['done']++;
+				++$state['file_idx'];
+				++$state['done'];
 				$state['current'] = $file['type'] . ': ' . basename( $file['path'] );
 				if ( $state['file_idx'] >= count( $state['all_files'] ) ) {
 					$state['phase'] = 'done';
@@ -608,14 +665,17 @@ class SMIG_Admin {
 		);
 	}
 
-	/* ================================================================
-	 *  AJAX — apply one chunk
-	 * ============================================================= */
-
+	/**
+	 * AJAX — apply one chunk
+	 */
 	public static function ajax_apply_chunk() {
 		check_ajax_referer( 'smig_nonce', 'nonce' );
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+
+		if ( empty( $_POST['session_id'] ) ) {
+			wp_send_json_error( array( 'message' => __( 'Session ID is required.', 'site-migrator' ) ) );
 		}
 
 		$sid = sanitize_text_field( wp_unslash( $_POST['session_id'] ) );
@@ -634,15 +694,16 @@ class SMIG_Admin {
 		switch ( $state['phase'] ) {
 
 			case 'create_staging':
-				$batch = 0;
-				while ( $state['tbl_idx'] < count( $state['tables'] ) && $batch < 5 ) {
+				$batch       = 0;
+				$table_count = count( $state['tables'] );
+				while ( $state['tbl_idx'] < $table_count && $batch < 5 ) {
 					$tbl      = $state['tables'][ $state['tbl_idx'] ];
 					$src_name = $tbl['name'];
 					if ( ! self::assert_valid_table_name( $src_name ) ) {
 						wp_send_json_error( array( 'message' => __( 'Invalid table in migration manifest.', 'site-migrator' ) ) );
 					}
-					$suffix     = self::table_suffix( $src_name, $state['src_prefix'], $state['src_base_pfx'] );
-					$stg_name   = SMIG_STAGING_PREFIX . $suffix;
+					$suffix      = self::table_suffix( $src_name, $state['src_prefix'], $state['src_base_pfx'] );
+					$stg_name    = SMIG_STAGING_PREFIX . $suffix;
 					$schema_file = SMIG_STAGING_DIR . '/tables/' . $src_name . '.schema.sql';
 					if ( ! is_readable( $schema_file ) ) {
 						wp_send_json_error( array( 'message' => __( 'Missing staged schema file.', 'site-migrator' ) ) );
@@ -669,10 +730,10 @@ class SMIG_Admin {
 						);
 					}
 
-					$state['tbl_idx']++;
-					$state['done']++;
+					++$state['tbl_idx'];
+					++$state['done'];
 					$state['current'] = 'Created staging: ' . $stg_name;
-					$batch++;
+					++$batch;
 				}
 
 				if ( $state['tbl_idx'] >= count( $state['tables'] ) ) {
@@ -699,7 +760,7 @@ class SMIG_Admin {
 				$file = SMIG_STAGING_DIR . '/tables/' . $src_name . '.rows.' . (int) $state['row_page'] . '.json';
 
 				if ( ! file_exists( $file ) ) {
-					$state['tbl_idx']++;
+					++$state['tbl_idx'];
 					$state['row_page'] = 1;
 					break;
 				}
@@ -709,7 +770,7 @@ class SMIG_Admin {
 				if ( ! empty( $data['rows'] ) && ! empty( $data['columns'] ) ) {
 					$cols = array_values( array_filter( $data['columns'], array( 'SMIG_Security', 'is_valid_identifier' ) ) );
 					if ( empty( $cols ) ) {
-						$state['tbl_idx']++;
+						++$state['tbl_idx'];
 						$state['row_page'] = 1;
 						break;
 					}
@@ -730,17 +791,17 @@ class SMIG_Admin {
 					}
 				}
 
-				$state['done']++;
+				++$state['done'];
 				$state['current'] = $src_name . ' rows p' . $state['row_page'];
 
 				$total_pages = isset( $data['total_pages'] ) ? (int) $data['total_pages'] : 1;
 				$next_file   = SMIG_STAGING_DIR . '/tables/' . $src_name . '.rows.' . ( $state['row_page'] + 1 ) . '.json';
 
 				if ( $state['row_page'] >= $total_pages || ! file_exists( $next_file ) ) {
-					$state['tbl_idx']++;
+					++$state['tbl_idx'];
 					$state['row_page'] = 1;
 				} else {
-					$state['row_page']++;
+					++$state['row_page'];
 				}
 				break;
 
@@ -784,15 +845,16 @@ class SMIG_Admin {
 					}
 				}
 
-				$state['done']    += 2;
-				$state['current']  = 'Tables swapped';
-				$state['phase']    = 'post_swap';
+				$state['done']   += 2;
+				$state['current'] = 'Tables swapped';
+				$state['phase']   = 'post_swap';
 				break;
 
 			case 'post_swap':
-				$target_prefix = $wpdb->prefix;
-				$old_url       = untrailingslashit( $state['src_site_url'] );
-				$new_url       = untrailingslashit( get_option( 'siteurl' ) ?: site_url() );
+				$target_prefix  = $wpdb->prefix;
+				$old_url        = untrailingslashit( $state['src_site_url'] );
+				$siteurl_option = get_option( 'siteurl' );
+				$new_url        = untrailingslashit( $siteurl_option ? $siteurl_option : site_url() );
 
 				if ( defined( 'WP_SITEURL' ) ) {
 					$new_url = untrailingslashit( WP_SITEURL );
@@ -852,7 +914,7 @@ class SMIG_Admin {
 					update_option( 'active_plugins', $active );
 				}
 
-				$state['done']++;
+				++$state['done'];
 				$state['current']  = 'URLs and prefixes updated';
 				$state['phase']    = 'copy_files';
 				$state['file_idx'] = 0;
@@ -862,15 +924,16 @@ class SMIG_Admin {
 				$manifest = json_decode( file_get_contents( SMIG_STAGING_DIR . '/manifest.json' ), true );
 				$files    = $manifest['all_files'] ?? array();
 
-				$batch = 0;
-				while ( $state['file_idx'] < count( $files ) && $batch < SMIG_FILES_PER_BATCH ) {
-					$f      = $files[ $state['file_idx'] ];
-					$type   = $f['type'];
-					$path   = ltrim( str_replace( '..', '', $f['path'] ), '/' );
+				$batch      = 0;
+				$file_count = count( $files );
+				while ( $state['file_idx'] < $file_count && $batch < SMIG_FILES_PER_BATCH ) {
+					$f    = $files[ $state['file_idx'] ];
+					$type = $f['type'];
+					$path = ltrim( str_replace( '..', '', $f['path'] ), '/' );
 					if ( '' === $path ) {
-						$state['file_idx']++;
-						$state['done']++;
-						$batch++;
+						++$state['file_idx'];
+						++$state['done'];
+						++$batch;
 						continue;
 					}
 					$subdir = 'theme' === $type ? 'themes' : $type;
@@ -896,9 +959,9 @@ class SMIG_Admin {
 						}
 					}
 
-					$state['file_idx']++;
-					$state['done']++;
-					$batch++;
+					++$state['file_idx'];
+					++$state['done'];
+					++$batch;
 				}
 
 				$state['current'] = 'Copying files… ' . $state['file_idx'] . '/' . count( $files );
@@ -906,8 +969,8 @@ class SMIG_Admin {
 				if ( $state['file_idx'] >= count( $files ) ) {
 					$wporg_queue = $manifest['wporg_queue'] ?? array();
 					if ( ! empty( $wporg_queue ) ) {
-						$state['phase']      = 'install_wporg';
-						$state['wporg_idx']  = 0;
+						$state['phase']       = 'install_wporg';
+						$state['wporg_idx']   = 0;
 						$state['wporg_queue'] = $wporg_queue;
 					} else {
 						$state['phase'] = 'cleanup';
@@ -916,9 +979,10 @@ class SMIG_Admin {
 				break;
 
 			case 'install_wporg':
-				$queue = $state['wporg_queue'] ?? array();
-				$batch = 0;
-				while ( $state['wporg_idx'] < count( $queue ) && $batch < 2 ) {
+				$queue       = $state['wporg_queue'] ?? array();
+				$batch       = 0;
+				$wporg_count = count( $queue );
+				while ( $state['wporg_idx'] < $wporg_count && $batch < 2 ) {
 					$plugin = $queue[ $state['wporg_idx'] ];
 					$result = SMIG_Plugin_Strategy::install_from_wporg( $plugin['slug'], $plugin['version'] );
 					if ( is_wp_error( $result ) ) {
@@ -928,10 +992,10 @@ class SMIG_Admin {
 							)
 						);
 					}
-					$state['wporg_idx']++;
-					$state['done']++;
+					++$state['wporg_idx'];
+					++$state['done'];
 					$state['current'] = 'WordPress.org: ' . ( $plugin['name'] ?? $plugin['slug'] );
-					$batch++;
+					++$batch;
 				}
 
 				if ( $state['wporg_idx'] >= count( $queue ) ) {
@@ -949,7 +1013,7 @@ class SMIG_Admin {
 
 				self::clean_staging();
 
-				$state['done']++;
+				++$state['done'];
 				$state['current'] = 'Cleanup complete';
 				$state['phase']   = 'done';
 				break;
@@ -1002,7 +1066,7 @@ class SMIG_Admin {
 		if ( is_wp_error( $base_url ) ) {
 			return $base_url;
 		}
-		$api_url  = trailingslashit( $base_url ) . 'wp-json/site-migrator/v1/' . $endpoint;
+		$api_url = trailingslashit( $base_url ) . 'wp-json/site-migrator/v1/' . $endpoint;
 		if ( ! empty( $params ) ) {
 			$api_url = add_query_arg( $params, $api_url );
 		}
@@ -1035,7 +1099,7 @@ class SMIG_Admin {
 	}
 
 	private static function advance_table( $state ) {
-		$state['tbl_idx']++;
+		++$state['tbl_idx'];
 		$state['tbl_page'] = 1;
 		if ( $state['tbl_idx'] >= count( $state['manifest']['tables'] ) ) {
 			$state['phase']    = 'files';
@@ -1137,29 +1201,29 @@ class SMIG_Admin {
 			$progress = $dl_state['total'] > 0
 				? (int) round( ( $dl_state['done'] / $dl_state['total'] ) * 100 )
 				: 0;
-			$current = $dl_state['current'] ?? $current;
-			$status  = 'done' === ( $dl_state['phase'] ?? '' ) ? 'downloaded' : 'downloading';
+			$current  = $dl_state['current'] ?? $current;
+			$status   = 'done' === ( $dl_state['phase'] ?? '' ) ? 'downloaded' : 'downloading';
 		} elseif ( $apply_state ) {
 			$progress = $apply_state['total'] > 0
 				? (int) round( ( $apply_state['done'] / $apply_state['total'] ) * 100 )
 				: 0;
-			$current = $apply_state['current'] ?? $current;
-			$status  = 'applying';
+			$current  = $apply_state['current'] ?? $current;
+			$status   = 'applying';
 		}
 
 		return array(
-			'session_id'         => $sid,
-			'source_url'         => $resume['source_url'] ?? '',
-			'download_complete'  => $download_complete,
-			'apply_started'      => ! empty( $resume['apply_started'] ) || (bool) $apply_state,
-			'status'             => $status,
-			'progress'           => $progress,
-			'current'            => $current,
-			'manifest'           => $manifest,
-			'manifest_stats'     => $resume['manifest_stats'] ?? array(),
-			'resume_download'    => (bool) $dl_state,
-			'resume_apply'       => (bool) $apply_state,
-			'expired'            => $expired,
+			'session_id'        => $sid,
+			'source_url'        => $resume['source_url'] ?? '',
+			'download_complete' => $download_complete,
+			'apply_started'     => ! empty( $resume['apply_started'] ) || (bool) $apply_state,
+			'status'            => $status,
+			'progress'          => $progress,
+			'current'           => $current,
+			'manifest'          => $manifest,
+			'manifest_stats'    => $resume['manifest_stats'] ?? array(),
+			'resume_download'   => (bool) $dl_state,
+			'resume_apply'      => (bool) $apply_state,
+			'expired'           => $expired,
 		);
 	}
 

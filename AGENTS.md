@@ -18,11 +18,26 @@ WordPress plugin: pull-based migration (source REST + target admin wizard). Inst
 Run from this directory (plugin root):
 
 ```bash
+composer install
+composer check          # lint + PHPCS + PHPStan + PHPUnit
+composer audit          # built-in; checks dependency advisories
+composer phpcbf         # auto-fix coding standard issues
+composer phpcs          # PHPCS only
+composer phpstan        # static analysis (level 5)
+composer test           # PHPUnit unit tests
+
+npm ci
+npm run lint:js         # ESLint (assets/admin.js)
+npm run wp-env:start    # local WordPress + plugin (requires Docker)
+```
+
+Release zip excludes dev files per `.distignore`.
+
+Quick syntax check without Composer:
+
+```bash
 php -l site-migrator.php
 php -l includes/class-admin.php
-php -l includes/class-source-api.php
-php -l includes/class-security.php
-php -l includes/class-plugin-strategy.php
 ```
 
 Manual test path: **Tools → Site Migrator** in wp-admin (`manage_options` required).
