@@ -297,7 +297,7 @@
 	function useStagedDownload($btn, spinnerId) {
 		hideNotices();
 		setButtonLoading($btn, spinnerId, true);
-		ajax('smig_use_staged_download')
+		return ajax('smig_use_staged_download')
 			.done(function (res) {
 				if (!res.success) {
 					showNotice(
@@ -599,40 +599,60 @@
 
 	/* Step 3: Apply */
 	$('#smig-apply-btn').on('click', function () {
-		if (!state.downloadComplete) {
-			showNotice(
-				'error',
-				'Complete the download first, or use Apply from downloaded content.'
-			);
-			return;
-		}
-		if (!state.sessionId) {
-			showNotice(
-				'error',
-				'No migration session. Use Apply from downloaded content or start a new download.'
-			);
-			return;
-		}
-
-		if (
-			!window.confirm(
-				'This will replace all content on this site with the downloaded data.\n\nThere is no undo. Continue?'
-			)
-		) {
-			return;
-		}
-
-		hideNotices();
 		var $btn = $(this);
-		setButtonLoading($btn, 'smig-apply-spinner', true);
-		$('#smig-apply-progress').prop('hidden', false);
-		$('#smig-apply-bar').val(0);
-		$('#smig-apply-text').text('Applying…');
-		$('#smig-complete').prop('hidden', true);
 
-		setApplyRunning(true);
-		setMigrationActive(true);
-		runApplyChunks($btn);
+		function beginApply() {
+			if (!state.downloadComplete) {
+				showNotice(
+					'error',
+					'Complete the download first, or use Apply from downloaded content.'
+				);
+				return;
+			}
+			if (!state.sessionId) {
+				showNotice(
+					'error',
+					'No migration session. Use Apply from downloaded content or start a new download.'
+				);
+				return;
+			}
+
+			if (
+				!window.confirm(
+					'This will replace all content on this site with the downloaded data.\n\nThere is no undo. Continue?'
+				)
+			) {
+				return;
+			}
+
+			hideNotices();
+			setButtonLoading($btn, 'smig-apply-spinner', true);
+			$('#smig-apply-progress').prop('hidden', false);
+			$('#smig-apply-bar').val(0);
+			$('#smig-apply-text').text('Applying…');
+			$('#smig-complete').prop('hidden', true);
+
+			setApplyRunning(true);
+			setMigrationActive(true);
+			runApplyChunks($btn);
+		}
+
+		if (!state.downloadComplete || !state.sessionId) {
+			var canUseStaged =
+				(smig.staged && smig.staged.ready) ||
+				(smig.resume &&
+					(smig.resume.staged_ready || smig.resume.can_apply_staged));
+			if (canUseStaged) {
+				useStagedDownload($btn, 'smig-apply-spinner').done(function (res) {
+					if (res.success) {
+						beginApply();
+					}
+				});
+				return;
+			}
+		}
+
+		beginApply();
 	});
 
 	$('#smig-cancel-btn, #smig-cancel-apply-btn').on('click', function () {
@@ -823,11 +843,22 @@
 		}
 		if (smig.staged.ready) {
 			showStagedBanners(smig.staged);
-			if (!state.downloadComplete && !state.migrationActive) {
-				showNotice(
-					'info',
-					'Downloaded migration files were found in migrator-staging. You can apply without downloading again.'
-				);
+			if (!state.downloadComplete) {
+				applyStagedToWizard({
+					session_id:
+						smig.staged.session_id ||
+						(smig.resume && smig.resume.session_id) ||
+						'',
+					source_url: smig.staged.source_url,
+					manifest: smig.staged.manifest,
+					manifest_stats: smig.staged.manifest_stats,
+				});
+				if (!state.migrationActive) {
+					showNotice(
+						'info',
+						'Downloaded migration files are ready. You can apply from step 3.'
+					);
+				}
 			}
 		} else if (smig.staged.message) {
 			showNotice('warning', smig.staged.message);

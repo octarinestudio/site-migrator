@@ -1474,25 +1474,34 @@ class SMIG_Admin {
 	 * @return array|null
 	 */
 	public static function get_resume_for_client() {
-		$resume = get_option( SMIG_RESUME_OPTION );
-		if ( ! is_array( $resume ) || empty( $resume['session_id'] ) ) {
+		$manifest_path = SMIG_STAGING_DIR . '/manifest.json';
+		$has_staging   = file_exists( $manifest_path );
+		$staged_info   = self::inspect_staged_download();
+		$staged_ready  = ! empty( $staged_info['ready'] );
+
+		if ( $staged_ready ) {
+			self::ensure_resume_for_staged_download( $staged_info );
+		}
+
+		$resume = get_option( SMIG_RESUME_OPTION, array() );
+		if ( ! is_array( $resume ) ) {
+			$resume = array();
+		}
+
+		$sid = isset( $resume['session_id'] ) ? (string) $resume['session_id'] : '';
+		if ( '' === $sid && ! $has_staging ) {
 			return null;
 		}
 
-		$sid           = $resume['session_id'];
-		$dl_state      = get_transient( 'smig_session_' . $sid );
-		$apply_state   = get_transient( 'smig_apply_' . $sid );
-		$manifest_path = SMIG_STAGING_DIR . '/manifest.json';
-		$has_staging   = file_exists( $manifest_path );
+		$dl_state    = ( '' !== $sid ) ? get_transient( 'smig_session_' . $sid ) : false;
+		$apply_state = ( '' !== $sid ) ? get_transient( 'smig_apply_' . $sid ) : false;
 
-		if ( ! $has_staging && ! $dl_state && ! $apply_state ) {
+		if ( ! $has_staging && ! $dl_state && ! $apply_state && ! $staged_ready ) {
 			self::clear_resume();
 			return null;
 		}
 
-		$staged_info       = self::inspect_staged_download();
-		$staged_ready      = ! empty( $staged_info['ready'] );
-		$expired           = $has_staging && ! $dl_state && ! $apply_state && empty( $resume['download_complete'] ) && ! $staged_ready;
+		$expired = $has_staging && ! $dl_state && ! $apply_state && empty( $resume['download_complete'] ) && ! $staged_ready;
 
 		$manifest = null;
 		if ( $has_staging ) {
