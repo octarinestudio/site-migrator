@@ -83,7 +83,9 @@ curl -sS -H "X-Migrator-Auth: YOUR_AUTH_CODE" "https://SOURCE-SITE.example/wp-js
 
 ## Apply phase order
 
-`create_staging` → `import_rows` → `swap` → `post_swap` → `copy_files` → `install_wporg` → `cleanup`
+`create_staging` → `import_rows` → `copy_files` → `swap` (+ URL/prefix fix in same step) → `install_wporg` → `cleanup`
+
+Files and WP.org plugin ZIPs are applied **before** the live DB swap so the admin session stays valid until cutover.
 
 ## Docs
 

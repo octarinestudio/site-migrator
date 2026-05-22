@@ -17,7 +17,7 @@ description: Site Migrator WordPress plugin — pull migration REST API, chunked
 smig_verify_source
   → smig_start_download (manifest, filter plugins)
   → smig_download_chunk (table_schema → table_rows → files → done)
-  → smig_apply_chunk (create_staging → import_rows → swap → post_swap → copy_files → install_wporg → cleanup)
+  → smig_apply_chunk (create_staging → import_rows → copy_files → swap → install_wporg → cleanup)
 ```
 
 Resume: option `smig_resume` + transients `smig_session_{id}` / `smig_apply_{id}`.

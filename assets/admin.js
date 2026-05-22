@@ -555,7 +555,10 @@
 	});
 
 	function runApplyChunks($btn) {
-		ajax('smig_apply_chunk', { session_id: state.sessionId })
+		ajax('smig_apply_chunk', {
+			session_id: state.sessionId,
+			reset_admin_user: $('#smig-opt-reset-admin').is(':checked') ? '1' : '0',
+		})
 			.done(function (res) {
 				if (!res.success) {
 					showNotice(
@@ -585,10 +588,19 @@
 					$('#smig-apply-bar').val(100);
 					$('#smig-apply-text').text('Done.');
 					$('#smig-complete').prop('hidden', false);
+					$('#smig-complete-login-hint').prop(
+						'hidden',
+						!d.admin_reset
+					);
 					setApplyRunning(false);
 					setMigrationActive(false);
 					setButtonLoading($btn, 'smig-apply-spinner', false);
-					showNotice('success', 'Migration complete.');
+					showNotice(
+						'success',
+						d.admin_reset
+							? 'Migration complete. Sign in as admin / password.'
+							: 'Migration complete.'
+					);
 					return;
 				}
 

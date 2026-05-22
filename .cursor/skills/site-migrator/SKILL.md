@@ -24,7 +24,7 @@ description: Site Migrator WordPress plugin (Cursor). For Claude Code use .claud
 Connect (verify REST)
   → start_download (manifest + file list + filter plugins)
   → download_chunk loop (tables → files → phase done)
-  → apply_chunk loop (staging tables → swap → URL fix → copy files → wp.org plugins → cleanup)
+  → apply_chunk loop (staging tables → copy files → DB swap + URL fix → wp.org plugins → cleanup)
 ```
 
 Session: `smig_session_{id}` (download), `smig_apply_{id}` (apply), option `smig_resume` (reload).
