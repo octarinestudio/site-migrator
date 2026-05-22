@@ -664,14 +664,61 @@ class SMIG_Admin {
 			return null;
 		}
 
+		if ( ! empty( $staged['ready'] ) ) {
+			self::ensure_resume_for_staged_download( $staged );
+		}
+
+		$resume = get_option( SMIG_RESUME_OPTION, array() );
+		$sid    = is_array( $resume ) && ! empty( $resume['session_id'] )
+			? (string) $resume['session_id']
+			: ( $staged['session_id'] ?? '' );
+
 		return array(
 			'detected'         => true,
 			'ready'            => ! empty( $staged['ready'] ),
 			'message'          => $staged['message'] ?? '',
 			'source_url'       => $staged['source_url'] ?? '',
+			'session_id'       => $sid,
 			'manifest'         => $staged['manifest'] ?? null,
 			'manifest_stats'   => $staged['manifest_stats'] ?? array(),
 			'can_apply_staged' => ! empty( $staged['ready'] ),
+		);
+	}
+
+	/**
+	 * Persist resume when migrator-staging is complete but the UI session was lost.
+	 *
+	 * @param array $staged Result from inspect_staged_download().
+	 */
+	private static function ensure_resume_for_staged_download( array $staged ) {
+		$resume = get_option( SMIG_RESUME_OPTION, array() );
+		if ( ! is_array( $resume ) ) {
+			$resume = array();
+		}
+
+		$sid = isset( $resume['session_id'] ) ? (string) $resume['session_id'] : '';
+		if ( '' === $sid && ! empty( $staged['session_id'] ) ) {
+			$sid = (string) $staged['session_id'];
+		}
+		if ( '' === $sid ) {
+			$sid = wp_generate_password( 16, false );
+		}
+
+		if ( ! empty( $resume['download_complete'] ) && ( $resume['session_id'] ?? '' ) === $sid ) {
+			return;
+		}
+
+		self::save_resume(
+			array(
+				'session_id'        => $sid,
+				'source_url'        => $staged['source_url'] ?? ( $resume['source_url'] ?? '' ),
+				'download_complete' => true,
+				'apply_started'     => ! empty( $resume['apply_started'] ),
+				'status'            => 'downloaded',
+				'progress'          => 100,
+				'current'           => __( 'Ready to apply from downloaded content', 'site-migrator' ),
+				'manifest_stats'    => $staged['manifest_stats'] ?? ( $resume['manifest_stats'] ?? array() ),
+			)
 		);
 	}
 
@@ -721,8 +768,8 @@ class SMIG_Admin {
 
 			$row_count = isset( $tbl['rows'] ) ? (int) $tbl['rows'] : 0;
 			if ( $row_count > 0 ) {
-				$rows_file = $tables_dir . '/' . $name . '.rows.1.json';
-				if ( ! is_readable( $rows_file ) ) {
+				$row_pages = glob( $tables_dir . '/' . $name . '.rows.*.json' );
+				if ( ! is_array( $row_pages ) || empty( $row_pages ) ) {
 					return array(
 						'detected' => true,
 						'ready'    => false,

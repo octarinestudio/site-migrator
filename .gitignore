@@ -1,17 +1,54 @@
+# OS
 .DS_Store
 Thumbs.db
-*.log
-.env
-.env.*
+Desktop.ini
+
+# Editors / IDEs
 .idea/
 .vscode/
+.fleet/
 *.swp
 *~
-node_modules/
-vendor/
+*.sublime-project
+*.sublime-workspace
+
+# Environment and secrets (never commit)
+.env
+.env.*
+*.pem
+*.key
+
+# PHP / Composer
+/vendor/
+composer.phar
 .phpunit.cache/
 .phpunit.result.cache
 phpunit.xml
 phpstan.neon
-/wp-content/migrator-staging/
+.phpcs.cache
+.php-cs-fixer.cache
+coverage/
+
+# JavaScript (lockfile regenerated locally; not committed)
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Local @wordpress/env overrides
+.wp-env.override.json
+
+# Release / build artifacts
+*.zip
+/build/
+/dist/
+
+# Private local AI / tool overrides
 CLAUDE.local.md
+*.local.md
+.codex/
+
+# Migration download cache (normally wp-content/migrator-staging/ outside this repo)
+migrator-staging/
