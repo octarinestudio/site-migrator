@@ -26,7 +26,7 @@ composer phpcs          # PHPCS only
 composer phpstan        # static analysis (level 5)
 composer test           # PHPUnit unit tests
 
-npm install
+npm ci
 npm run lint:js         # ESLint (assets/admin.js)
 npm run wp-env:start    # local WordPress + plugin (requires Docker)
 ```
