@@ -205,6 +205,16 @@ class SMIG_Admin {
 								</p>
 							</div>
 							<div id="smig-apply-summary"></div>
+							<fieldset class="smig-options">
+								<legend class="screen-reader-text"><?php esc_html_e( 'After apply', 'site-migrator' ); ?></legend>
+								<label for="smig-opt-reset-admin">
+									<input type="checkbox" id="smig-opt-reset-admin" checked="checked" />
+									<?php esc_html_e( 'Replace all users with a single administrator (login: admin, password: password)', 'site-migrator' ); ?>
+								</label>
+								<p class="description">
+									<?php esc_html_e( 'Recommended after migration so you can sign in to wp-admin. Change this password immediately.', 'site-migrator' ); ?>
+								</p>
+							</fieldset>
 							<p class="submit" id="smig-apply-actions-start">
 								<button type="button" class="button button-link-delete" id="smig-apply-btn">
 									<?php esc_html_e( 'Replace all content', 'site-migrator' ); ?>
@@ -224,10 +234,13 @@ class SMIG_Admin {
 							<div id="smig-complete" class="notice notice-success inline" hidden>
 								<p>
 									<strong><?php esc_html_e( 'Migration complete.', 'site-migrator' ); ?></strong>
+									<span id="smig-complete-login-hint" hidden>
+										<?php esc_html_e( 'Sign in with username admin and password password, then change the password under Users.', 'site-migrator' ); ?>
+									</span>
 									<?php
 									printf(
 										/* translators: %s: link to Settings > Permalinks */
-										wp_kses_post( __( 'You may need to sign in again and save permalinks under %s.', 'site-migrator' ) ),
+										' ' . wp_kses_post( __( 'Save permalinks under %s if links break.', 'site-migrator' ) ),
 										'<a href="' . esc_url( admin_url( 'options-permalink.php' ) ) . '">' . esc_html__( 'Settings → Permalinks', 'site-migrator' ) . '</a>'
 									);
 									?>
@@ -683,13 +696,30 @@ class SMIG_Admin {
 		$akey  = 'smig_apply_' . $sid;
 		$state = get_transient( $akey );
 		if ( ! $state ) {
-			$state = self::init_apply_state( $sid );
+			$reset_admin = ! empty( $_POST['reset_admin_user'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['reset_admin_user'] ) );
+			$state       = self::init_apply_state( $sid, $reset_admin );
 			if ( is_wp_error( $state ) ) {
 				wp_send_json_error( array( 'message' => $state->get_error_message() ) );
 			}
 		}
 
 		global $wpdb;
+
+		// Resume sessions from before apply v2 (DB swap ran before file copy).
+		if ( empty( $state['apply_version'] ) || (int) $state['apply_version'] < 2 ) {
+			if ( ! empty( $state['db_swapped'] ) && 'copy_files' === $state['phase'] ) {
+				$manifest    = json_decode( file_get_contents( SMIG_STAGING_DIR . '/manifest.json' ), true );
+				$wporg_queue = $manifest['wporg_queue'] ?? array();
+				if ( ! empty( $wporg_queue ) ) {
+					$state['phase']       = 'install_wporg';
+					$state['wporg_idx']   = 0;
+					$state['wporg_queue'] = $wporg_queue;
+				} else {
+					$state['phase'] = 'cleanup';
+				}
+			}
+			$state['apply_version'] = 2;
+		}
 
 		switch ( $state['phase'] ) {
 
@@ -745,7 +775,8 @@ class SMIG_Admin {
 
 			case 'import_rows':
 				if ( $state['tbl_idx'] >= count( $state['tables'] ) ) {
-					$state['phase'] = 'swap';
+					$state['phase']    = 'copy_files';
+					$state['file_idx'] = 0;
 					break;
 				}
 
@@ -845,79 +876,18 @@ class SMIG_Admin {
 					}
 				}
 
-				$state['done']   += 2;
-				$state['current'] = 'Tables swapped';
-				$state['phase']   = 'post_swap';
+				$state['done']    += 2;
+				$state['current']  = 'Replacing database…';
+				$state['db_swapped'] = true;
+
+				self::apply_post_swap_updates( $state );
+
+				$state['current'] = 'Database replaced';
 				break;
 
 			case 'post_swap':
-				$target_prefix  = $wpdb->prefix;
-				$old_url        = untrailingslashit( $state['src_site_url'] );
-				$siteurl_option = get_option( 'siteurl' );
-				$new_url        = untrailingslashit( $siteurl_option ? $siteurl_option : site_url() );
-
-				if ( defined( 'WP_SITEURL' ) ) {
-					$new_url = untrailingslashit( WP_SITEURL );
-				} elseif ( defined( 'WP_HOME' ) ) {
-					$new_url = untrailingslashit( WP_HOME );
-				} else {
-					$new_url = untrailingslashit(
-						( is_ssl() ? 'https://' : 'http://' ) . ( isset( $_SERVER['HTTP_HOST'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ) : '' )
-					);
-				}
-
-				$wpdb->update(
-					$target_prefix . 'options',
-					array( 'option_value' => $new_url ),
-					array( 'option_name' => 'siteurl' )
-				);
-				$wpdb->update(
-					$target_prefix . 'options',
-					array( 'option_value' => $new_url ),
-					array( 'option_name' => 'home' )
-				);
-
-				if ( $old_url !== $new_url ) {
-					self::search_replace_table( $target_prefix . 'options', 'option_value', $old_url, $new_url );
-					self::search_replace_table( $target_prefix . 'posts', 'post_content', $old_url, $new_url );
-					self::search_replace_table( $target_prefix . 'posts', 'guid', $old_url, $new_url );
-					self::search_replace_table( $target_prefix . 'postmeta', 'meta_value', $old_url, $new_url );
-				}
-
-				$src_pfx = $state['src_prefix'];
-				if ( $src_pfx !== $target_prefix ) {
-					$wpdb->query(
-						$wpdb->prepare(
-							"UPDATE `{$target_prefix}options` SET option_name = REPLACE(option_name, %s, %s) WHERE option_name LIKE %s",
-							$src_pfx,
-							$target_prefix,
-							$wpdb->esc_like( $src_pfx ) . '%'
-						)
-					);
-					$wpdb->query(
-						$wpdb->prepare(
-							"UPDATE `{$target_prefix}usermeta` SET meta_key = REPLACE(meta_key, %s, %s) WHERE meta_key LIKE %s",
-							$src_pfx,
-							$target_prefix,
-							$wpdb->esc_like( $src_pfx ) . '%'
-						)
-					);
-				}
-
-				$active      = get_option( 'active_plugins', array() );
-				$self_plugin = 'site-migrator/site-migrator.php';
-				if ( ! is_array( $active ) ) {
-					$active = array();
-				}
-				if ( ! in_array( $self_plugin, $active, true ) ) {
-					$active[] = $self_plugin;
-					update_option( 'active_plugins', $active );
-				}
-
-				++$state['done'];
-				$state['current']  = 'URLs and prefixes updated';
-				$state['phase']    = 'copy_files';
-				$state['file_idx'] = 0;
+				// Legacy resume: post-swap only (swap already completed).
+				self::apply_post_swap_updates( $state );
 				break;
 
 			case 'copy_files':
@@ -967,14 +937,7 @@ class SMIG_Admin {
 				$state['current'] = 'Copying files… ' . $state['file_idx'] . '/' . count( $files );
 
 				if ( $state['file_idx'] >= count( $files ) ) {
-					$wporg_queue = $manifest['wporg_queue'] ?? array();
-					if ( ! empty( $wporg_queue ) ) {
-						$state['phase']       = 'install_wporg';
-						$state['wporg_idx']   = 0;
-						$state['wporg_queue'] = $wporg_queue;
-					} else {
-						$state['phase'] = 'cleanup';
-					}
+					$state['phase'] = 'swap';
 				}
 				break;
 
@@ -1004,6 +967,17 @@ class SMIG_Admin {
 				break;
 
 			case 'cleanup':
+				if ( ! empty( $state['reset_admin_user'] ) && empty( $state['users_reset_done'] ) ) {
+					$result = self::reset_users_to_single_admin();
+					if ( is_wp_error( $result ) ) {
+						wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+					}
+					$state['users_reset_done'] = true;
+					$state['admin_login']      = 'admin';
+					++$state['done'];
+					$state['current'] = __( 'Administrator account created', 'site-migrator' );
+				}
+
 				$all_tables = $wpdb->get_col( 'SHOW TABLES' );
 				foreach ( $all_tables as $t ) {
 					if ( 0 === strpos( $t, SMIG_STAGING_PREFIX ) ) {
@@ -1033,11 +1007,13 @@ class SMIG_Admin {
 		$pct = $state['total'] > 0 ? round( ( $state['done'] / $state['total'] ) * 100 ) : 0;
 		wp_send_json_success(
 			array(
-				'phase'    => $state['phase'],
-				'progress' => min( $pct, 100 ),
-				'done'     => $state['done'],
-				'total'    => $state['total'],
-				'current'  => $state['current'],
+				'phase'        => $state['phase'],
+				'progress'     => min( $pct, 100 ),
+				'done'         => $state['done'],
+				'total'        => $state['total'],
+				'current'      => $state['current'],
+				'admin_reset'  => ! empty( $state['users_reset_done'] ),
+				'admin_login'  => $state['admin_login'] ?? 'admin',
 			)
 		);
 	}
@@ -1045,6 +1021,15 @@ class SMIG_Admin {
 	/** Public wrapper for activation hook. */
 	public static function ensure_staging_secure_public() {
 		self::ensure_staging_secure();
+	}
+
+	/**
+	 * Public wrapper for recovery scripts (bin/reset-admin.php).
+	 *
+	 * @return int|WP_Error
+	 */
+	public static function reset_users_to_single_admin_public() {
+		return self::reset_users_to_single_admin();
 	}
 
 	/**
@@ -1110,7 +1095,12 @@ class SMIG_Admin {
 		return $state;
 	}
 
-	private static function init_apply_state( $sid ) {
+	/**
+	 * @param string $sid          Session id.
+	 * @param bool   $reset_admin  Replace all users with admin/password after apply.
+	 * @return array|WP_Error
+	 */
+	private static function init_apply_state( $sid, $reset_admin = false ) {
 		$manifest_file = SMIG_STAGING_DIR . '/manifest.json';
 		if ( ! file_exists( $manifest_file ) ) {
 			return new WP_Error( 'no_staging', 'No staging data found. Please download first.' );
@@ -1126,14 +1116,23 @@ class SMIG_Admin {
 			$total += max( 1, (int) ceil( $t['rows'] / SMIG_ROWS_PER_PAGE ) );
 		}
 		$total += 2 + 1 + count( $files ) + count( $wporg_queue ) + 1;
+		if ( $reset_admin ) {
+			++$total;
+		}
+
+		$target_urls = self::resolve_target_site_urls( true );
 
 		$state = array(
-			'phase'        => 'create_staging',
-			'tables'       => $tables,
-			'src_prefix'   => $manifest['prefix'],
-			'src_base_pfx' => $manifest['base_prefix'],
-			'src_site_url' => $manifest['site_url'],
-			'wporg_queue'  => $wporg_queue,
+			'phase'            => 'create_staging',
+			'apply_version'    => 2,
+			'reset_admin_user' => $reset_admin,
+			'tables'         => $tables,
+			'src_prefix'     => $manifest['prefix'],
+			'src_base_pfx'   => $manifest['base_prefix'],
+			'src_site_url'   => $manifest['site_url'],
+			'target_siteurl' => $target_urls['siteurl'],
+			'target_home'    => $target_urls['home'],
+			'wporg_queue'    => $wporg_queue,
 			'tbl_idx'      => 0,
 			'row_page'     => 1,
 			'file_idx'     => 0,
@@ -1276,6 +1275,270 @@ class SMIG_Admin {
 			return substr( $table, strlen( $src_prefix ) );
 		}
 		return $table;
+	}
+
+	/**
+	 * URL fixes and prefix repair immediately after the table swap (single atomic DB cutover).
+	 *
+	 * @param array $state Apply state (by reference).
+	 */
+	private static function apply_post_swap_updates( &$state ) {
+		global $wpdb;
+
+		$target_prefix = $wpdb->prefix;
+		$target_urls   = self::get_apply_target_urls( $state );
+		$old_url       = untrailingslashit( $state['src_site_url'] );
+		$new_siteurl   = $target_urls['siteurl'];
+		$new_home      = $target_urls['home'];
+
+		$wpdb->update(
+			$target_prefix . 'options',
+			array( 'option_value' => $new_siteurl ),
+			array( 'option_name' => 'siteurl' )
+		);
+		$wpdb->update(
+			$target_prefix . 'options',
+			array( 'option_value' => $new_home ),
+			array( 'option_name' => 'home' )
+		);
+
+		foreach ( self::url_replace_variants( $old_url ) as $variant ) {
+			if ( $variant === $new_siteurl || $variant === $new_home ) {
+				continue;
+			}
+			self::search_replace_table( $target_prefix . 'options', 'option_value', $variant, $new_siteurl );
+			self::search_replace_table( $target_prefix . 'posts', 'post_content', $variant, $new_siteurl );
+			self::search_replace_table( $target_prefix . 'posts', 'guid', $variant, $new_siteurl );
+			self::search_replace_table( $target_prefix . 'postmeta', 'meta_value', $variant, $new_siteurl );
+		}
+
+		$src_pfx = $state['src_prefix'];
+		if ( $src_pfx !== $target_prefix ) {
+			$wpdb->query(
+				$wpdb->prepare(
+					"UPDATE `{$target_prefix}options` SET option_name = REPLACE(option_name, %s, %s) WHERE option_name LIKE %s",
+					$src_pfx,
+					$target_prefix,
+					$wpdb->esc_like( $src_pfx ) . '%'
+				)
+			);
+			$wpdb->query(
+				$wpdb->prepare(
+					"UPDATE `{$target_prefix}usermeta` SET meta_key = REPLACE(meta_key, %s, %s) WHERE meta_key LIKE %s",
+					$src_pfx,
+					$target_prefix,
+					$wpdb->esc_like( $src_pfx ) . '%'
+				)
+			);
+		}
+
+		self::repair_administrator_capabilities( $target_prefix );
+
+		$active      = get_option( 'active_plugins', array() );
+		$self_plugin = 'site-migrator/site-migrator.php';
+		if ( ! is_array( $active ) ) {
+			$active = array();
+		}
+		if ( ! in_array( $self_plugin, $active, true ) ) {
+			$active[] = $self_plugin;
+			update_option( 'active_plugins', $active );
+		}
+
+		++$state['done'];
+
+		$manifest    = json_decode( file_get_contents( SMIG_STAGING_DIR . '/manifest.json' ), true );
+		$wporg_queue = $manifest['wporg_queue'] ?? array();
+		if ( ! empty( $wporg_queue ) ) {
+			$state['phase']       = 'install_wporg';
+			$state['wporg_idx']   = 0;
+			$state['wporg_queue'] = $wporg_queue;
+		} else {
+			$state['phase'] = 'cleanup';
+		}
+	}
+
+	/**
+	 * Ensure imported users have a valid administrator capabilities row for this table prefix.
+	 *
+	 * @param string $table_prefix Target $wpdb->prefix.
+	 */
+	private static function repair_administrator_capabilities( $table_prefix ) {
+		global $wpdb;
+
+		$cap_key = $table_prefix . 'capabilities';
+		$admins  = get_users(
+			array(
+				'role'   => 'administrator',
+				'fields' => 'ID',
+			)
+		);
+
+		if ( empty( $admins ) ) {
+			$admins = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = %s AND meta_value LIKE %s",
+					$cap_key,
+					'%administrator%'
+				)
+			);
+		}
+
+		foreach ( $admins as $user_id ) {
+			$user_id = (int) $user_id;
+			update_user_meta( $user_id, $cap_key, array( 'administrator' => true ) );
+			update_user_meta( $user_id, $table_prefix . 'user_level', 10 );
+		}
+	}
+
+	/**
+	 * Remove all users and create one administrator (login admin, password password).
+	 *
+	 * @return int|WP_Error User ID or error.
+	 */
+	private static function reset_users_to_single_admin() {
+		global $wpdb;
+
+		if ( is_multisite() ) {
+			return new WP_Error(
+				'multisite_reset',
+				__( 'Replacing all users is only supported on single-site WordPress installs.', 'site-migrator' )
+			);
+		}
+
+		if ( ! function_exists( 'wp_insert_user' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/user.php';
+		}
+
+		$host  = wp_parse_url( home_url(), PHP_URL_HOST );
+		$host  = $host ? $host : 'localhost';
+		$email = 'admin@' . $host;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( "DELETE FROM {$wpdb->usermeta}" );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( "DELETE FROM {$wpdb->users}" );
+
+		$user_id = wp_insert_user(
+			array(
+				'user_login'   => 'admin',
+				'user_pass'    => 'password',
+				'user_email'   => $email,
+				'display_name' => 'Administrator',
+				'role'         => 'administrator',
+			)
+		);
+
+		if ( is_wp_error( $user_id ) ) {
+			return $user_id;
+		}
+
+		$user = new WP_User( $user_id );
+		$user->set_role( 'administrator' );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->posts} SET post_author = %d WHERE post_author > 0", $user_id ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->comments} SET user_id = %d WHERE user_id > 0", $user_id ) );
+
+		clean_user_cache( $user_id );
+		wp_cache_flush();
+
+		return $user_id;
+	}
+
+	/**
+	 * @param bool $use_db_options When true, read siteurl/home from DB (only safe before swap).
+	 * @return array{siteurl: string, home: string}
+	 */
+	private static function resolve_target_site_urls( $use_db_options = false ) {
+		if ( defined( 'WP_SITEURL' ) ) {
+			$siteurl = untrailingslashit( WP_SITEURL );
+		} elseif ( $use_db_options ) {
+			$siteurl = untrailingslashit( (string) get_option( 'siteurl' ) );
+		} else {
+			$siteurl = self::url_from_current_request();
+		}
+
+		if ( defined( 'WP_HOME' ) ) {
+			$home = untrailingslashit( WP_HOME );
+		} elseif ( $use_db_options ) {
+			$home = untrailingslashit( (string) get_option( 'home' ) );
+		} else {
+			$home = $siteurl;
+		}
+
+		if ( '' === $siteurl ) {
+			$siteurl = self::url_from_current_request();
+		}
+		if ( '' === $home ) {
+			$home = $siteurl;
+		}
+
+		return array(
+			'siteurl' => $siteurl,
+			'home'    => $home,
+		);
+	}
+
+	/**
+	 * URLs stored at apply start, or from wp-config / request after swap.
+	 *
+	 * @param array $state Apply transient state.
+	 * @return array{siteurl: string, home: string}
+	 */
+	private static function get_apply_target_urls( $state ) {
+		if ( ! empty( $state['target_siteurl'] ) && ! empty( $state['target_home'] ) ) {
+			return array(
+				'siteurl' => untrailingslashit( $state['target_siteurl'] ),
+				'home'    => untrailingslashit( $state['target_home'] ),
+			);
+		}
+
+		return self::resolve_target_site_urls( false );
+	}
+
+	/**
+	 * Build site URL from the current admin request (fallback when wp-config has no constants).
+	 *
+	 * @return string
+	 */
+	private static function url_from_current_request() {
+		$host = isset( $_SERVER['HTTP_HOST'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ) : '';
+		if ( '' === $host ) {
+			return '';
+		}
+
+		$scheme = is_ssl() ? 'https' : 'http';
+		return untrailingslashit( $scheme . '://' . $host );
+	}
+
+	/**
+	 * Old URL variants to search-replace (http/https, with and without trailing slash).
+	 *
+	 * @param string $url Source site URL.
+	 * @return string[]
+	 */
+	private static function url_replace_variants( $url ) {
+		$url      = untrailingslashit( $url );
+		$variants = array( $url, $url . '/' );
+
+		$parts = wp_parse_url( $url );
+		if ( empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
+			return array_unique( $variants );
+		}
+
+		$host = $parts['host'];
+		if ( ! empty( $parts['port'] ) ) {
+			$host .= ':' . $parts['port'];
+		}
+
+		$path = isset( $parts['path'] ) ? $parts['path'] : '';
+		foreach ( array( 'http', 'https' ) as $scheme ) {
+			$variants[] = $scheme . '://' . $host . $path;
+			$variants[] = $scheme . '://' . $host . $path . '/';
+		}
+
+		return array_values( array_unique( $variants ) );
 	}
 
 	private static function search_replace_table( $table, $column, $search, $replace ) {
