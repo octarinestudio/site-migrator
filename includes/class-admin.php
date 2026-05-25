@@ -586,7 +586,7 @@ class SMIG_Admin {
 		$sid = isset( $_POST['session_id'] ) ? sanitize_text_field( wp_unslash( $_POST['session_id'] ) ) : '';
 		if ( $sid ) {
 			delete_transient( 'smig_session_' . $sid );
-			delete_transient( 'smig_apply_' . $sid );
+			self::delete_apply_state( $sid );
 		}
 
 		self::clean_staging();
@@ -628,7 +628,7 @@ class SMIG_Admin {
 		}
 
 		delete_transient( 'smig_session_' . $sid );
-		delete_transient( 'smig_apply_' . $sid );
+		self::delete_apply_state( $sid );
 
 		self::save_resume(
 			array(
@@ -975,21 +975,23 @@ class SMIG_Admin {
 	 * AJAX — apply one chunk
 	 */
 	public static function ajax_apply_chunk() {
-		check_ajax_referer( 'smig_nonce', 'nonce' );
-		if ( ! current_user_can( 'manage_options' ) ) {
-			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
-		}
-
 		if ( empty( $_POST['session_id'] ) ) {
 			wp_send_json_error( array( 'message' => __( 'Session ID is required.', 'site-migrator' ) ) );
 		}
 
-		$sid = sanitize_text_field( wp_unslash( $_POST['session_id'] ) );
+		$sid         = sanitize_text_field( wp_unslash( $_POST['session_id'] ) );
+		$apply_token = isset( $_POST['apply_token'] ) ? sanitize_text_field( wp_unslash( $_POST['apply_token'] ) ) : '';
+
+		$state = self::load_apply_state( $sid );
+		if ( ! self::verify_apply_chunk_auth( $state, $apply_token ) ) {
+			return;
+		}
 
 		$akey  = 'smig_apply_' . $sid;
-		$state = get_transient( $akey );
 		if ( ! $state ) {
-			$reset_admin = ! empty( $_POST['reset_admin_user'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['reset_admin_user'] ) );
+			$reset_admin = self::is_reset_admin_user_requested(
+				isset( $_POST['reset_admin_user'] ) ? wp_unslash( $_POST['reset_admin_user'] ) : null
+			);
 			$target_urls = self::resolve_target_urls_from_request();
 			if ( is_wp_error( $target_urls ) ) {
 				wp_send_json_error( array( 'message' => $target_urls->get_error_message() ) );
@@ -1000,7 +1002,7 @@ class SMIG_Admin {
 			}
 		} else {
 			if ( isset( $_POST['reset_admin_user'] ) ) {
-				$state['reset_admin_user'] = ( '1' === sanitize_text_field( wp_unslash( $_POST['reset_admin_user'] ) ) );
+				$state['reset_admin_user'] = self::is_reset_admin_user_requested( wp_unslash( $_POST['reset_admin_user'] ) );
 			}
 			if ( empty( $state['db_swapped'] ) ) {
 				$target_urls = self::resolve_target_urls_from_request();
@@ -1015,20 +1017,22 @@ class SMIG_Admin {
 
 		global $wpdb;
 
-		// Resume sessions from before apply v2 (DB swap ran before file copy).
-		if ( empty( $state['apply_version'] ) || (int) $state['apply_version'] < 2 ) {
-			if ( ! empty( $state['db_swapped'] ) && 'copy_files' === $state['phase'] ) {
+		// Resume sessions from older apply flows (phase order / swap timing).
+		if ( empty( $state['apply_version'] ) || (int) $state['apply_version'] < 3 ) {
+			if ( ! empty( $state['db_swapped'] ) && in_array( $state['phase'], array( 'copy_files', 'install_wporg' ), true ) ) {
 				$manifest    = json_decode( file_get_contents( SMIG_STAGING_DIR . '/manifest.json' ), true );
-				$wporg_queue = $manifest['wporg_queue'] ?? array();
+				$wporg_queue = $manifest['wporg_queue'] ?? $state['wporg_queue'] ?? array();
 				if ( ! empty( $wporg_queue ) ) {
 					$state['phase']       = 'install_wporg';
-					$state['wporg_idx']   = 0;
+					$state['wporg_idx']   = isset( $state['wporg_idx'] ) ? (int) $state['wporg_idx'] : 0;
 					$state['wporg_queue'] = $wporg_queue;
 				} else {
 					$state['phase'] = 'cleanup';
 				}
+			} elseif ( empty( $state['db_swapped'] ) && 'swap' === $state['phase'] && ! empty( $state['wporg_queue'] ) ) {
+				$state['phase'] = 'install_wporg';
 			}
-			$state['apply_version'] = 2;
+			$state['apply_version'] = 3;
 		}
 
 		$reset_err = self::maybe_complete_admin_user_reset( $state );
@@ -1187,7 +1191,7 @@ class SMIG_Admin {
 					$sql    = 'RENAME TABLE ' . implode( ', ', $renames );
 					$result = $wpdb->query( $sql );
 					if ( false === $result ) {
-						$hint = __( 'If a previous apply partially ran, leftover _smig_old_* tables may need dropping. After fixing, run apply again or use bin/reset-admin.php from the site root to create login admin / password.', 'site-migrator' );
+						$hint = __( 'If a previous apply partially ran, leftover _smig_old_* tables may need dropping. After fixing, run apply again with “Replace all users…” enabled, or use the Site Migrator recovery link on wp-login.', 'site-migrator' );
 						wp_send_json_error(
 							array(
 								'message' => SMIG_Security::public_error_message(
@@ -1203,9 +1207,7 @@ class SMIG_Admin {
 				$state['current']  = 'Replacing database…';
 				$state['db_swapped'] = true;
 
-				self::apply_post_swap_updates( $state );
-
-				$admin_err = self::finish_admin_access_after_swap( $state );
+				$admin_err = self::apply_post_swap_updates( $state );
 				if ( is_wp_error( $admin_err ) ) {
 					wp_send_json_error( array( 'message' => $admin_err->get_error_message() ) );
 				}
@@ -1215,8 +1217,7 @@ class SMIG_Admin {
 
 			case 'post_swap':
 				// Legacy resume: post-swap only (swap already completed).
-				self::apply_post_swap_updates( $state );
-				$admin_err = self::finish_admin_access_after_swap( $state );
+				$admin_err = self::apply_post_swap_updates( $state );
 				if ( is_wp_error( $admin_err ) ) {
 					wp_send_json_error( array( 'message' => $admin_err->get_error_message() ) );
 				}
@@ -1276,7 +1277,12 @@ class SMIG_Admin {
 				$state['current'] = 'Copying files… ' . $state['file_idx'] . '/' . count( $files );
 
 				if ( $state['file_idx'] >= count( $files ) ) {
-					$state['phase'] = 'swap';
+					$queue = $state['wporg_queue'] ?? array();
+					if ( ! empty( $queue ) ) {
+						$state['phase'] = 'install_wporg';
+					} else {
+						$state['phase'] = 'swap';
+					}
 				}
 				break;
 
@@ -1284,28 +1290,33 @@ class SMIG_Admin {
 				$queue       = $state['wporg_queue'] ?? array();
 				$batch       = 0;
 				$wporg_count = count( $queue );
+				if ( ! isset( $state['wporg_errors'] ) || ! is_array( $state['wporg_errors'] ) ) {
+					$state['wporg_errors'] = array();
+				}
 				while ( $state['wporg_idx'] < $wporg_count && $batch < 2 ) {
 					$plugin = $queue[ $state['wporg_idx'] ];
-					$result = SMIG_Plugin_Strategy::install_from_wporg( $plugin['slug'], $plugin['version'] );
+					$slug   = isset( $plugin['slug'] ) ? sanitize_key( $plugin['slug'] ) : '';
+					$result = SMIG_Plugin_Strategy::install_from_wporg(
+						$slug,
+						isset( $plugin['version'] ) ? (string) $plugin['version'] : ''
+					);
 					if ( is_wp_error( $result ) ) {
-						wp_send_json_error(
-							array(
-								'message' => $plugin['slug'] . ': ' . $result->get_error_message(),
-							)
-						);
+						$state['wporg_errors'][ $slug ] = $result->get_error_message();
 					}
 					++$state['wporg_idx'];
 					++$state['done'];
-					$state['current'] = 'WordPress.org: ' . ( $plugin['name'] ?? $plugin['slug'] );
+					$state['current'] = 'WordPress.org: ' . ( $plugin['name'] ?? $slug );
 					++$batch;
 				}
 
-				if ( $state['wporg_idx'] >= count( $queue ) ) {
-					$state['phase'] = 'cleanup';
+				if ( $state['wporg_idx'] >= $wporg_count ) {
+					$state['phase'] = 'swap';
 				}
 				break;
 
 			case 'cleanup':
+				self::reconcile_plugins_after_apply( $state );
+
 				$all_tables = $wpdb->get_col( 'SHOW TABLES' );
 				foreach ( $all_tables as $t ) {
 					if ( 0 === strpos( $t, SMIG_STAGING_PREFIX ) ) {
@@ -1324,10 +1335,11 @@ class SMIG_Admin {
 				break;
 		}
 
-		set_transient( $akey, $state, 4 * HOUR_IN_SECONDS );
+		self::save_apply_state( $sid, $state );
 
 		if ( 'done' === $state['phase'] ) {
 			self::clear_resume();
+			self::delete_apply_state( $sid );
 		} else {
 			self::sync_resume_from_apply( $state );
 		}
@@ -1341,14 +1353,19 @@ class SMIG_Admin {
 			'current'      => $state['current'],
 			'admin_reset'  => ! empty( $state['users_reset_done'] ),
 			'admin_login'  => $state['admin_login'] ?? 'admin',
+			'apply_token'  => $state['apply_token'] ?? '',
+			'db_swapped'   => ! empty( $state['db_swapped'] ),
 		);
 		if ( 'done' === $state['phase'] ) {
 			$response['recovery_url'] = self::get_recovery_url();
 			if ( empty( $response['admin_reset'] ) && ! self::site_has_manage_options_user() ) {
 				$response['admin_warning'] = __(
-					'No administrator account with wp-admin access was found. Use the recovery link below or run bin/reset-admin.php from the site root.',
+					'No administrator account with wp-admin access was found. Use the recovery link below (works without logging in).',
 					'site-migrator'
 				);
+			}
+			if ( ! empty( $state['wporg_errors'] ) && is_array( $state['wporg_errors'] ) ) {
+				$response['wporg_errors'] = $state['wporg_errors'];
 			}
 		}
 		wp_send_json_success( $response );
@@ -1365,7 +1382,7 @@ class SMIG_Admin {
 	}
 
 	/**
-	 * Public wrapper for recovery scripts (bin/reset-admin.php).
+	 * Public wrapper for programmatic recovery (same logic as apply + wp-login recovery).
 	 *
 	 * @return int|WP_Error
 	 */
@@ -1455,11 +1472,14 @@ class SMIG_Admin {
 	 * @return null|WP_Error
 	 */
 	private static function finish_admin_access_after_swap( &$state ) {
+		$admin_user_id = 0;
+
 		if ( ! empty( $state['reset_admin_user'] ) && empty( $state['users_reset_done'] ) ) {
 			$result = self::reset_users_to_single_admin();
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
+			$admin_user_id             = (int) $result;
 			$state['users_reset_done'] = true;
 			$state['admin_login']      = 'admin';
 		} elseif ( empty( $state['users_reset_done'] ) ) {
@@ -1468,16 +1488,48 @@ class SMIG_Admin {
 				return $fixed;
 			}
 			if ( $fixed ) {
+				$admin_user_id              = (int) $fixed;
 				$state['users_reset_done']  = true;
 				$state['admin_login']       = 'admin';
 				$state['admin_reset_auto']  = true;
 			}
 		}
 
+		if ( $admin_user_id < 1 ) {
+			$admin = get_user_by( 'login', $state['admin_login'] ?? 'admin' );
+			if ( $admin ) {
+				$admin_user_id = (int) $admin->ID;
+			}
+		}
+
 		self::refresh_recovery_token();
 		self::ensure_sole_user_admin_mu_plugin();
 
+		if ( $admin_user_id > 0 && ! headers_sent() ) {
+			wp_set_current_user( $admin_user_id );
+			wp_set_auth_cookie( $admin_user_id, true, is_ssl(), true );
+		}
+
+		self::maybe_ensure_single_user_admin_access();
+
 		return null;
+	}
+
+	/**
+	 * Whether the apply UI requested a full user replace (admin / password).
+	 *
+	 * @param mixed $raw POST value or stored state flag.
+	 * @return bool
+	 */
+	private static function is_reset_admin_user_requested( $raw ) {
+		if ( null === $raw || '' === $raw ) {
+			return false;
+		}
+		if ( is_bool( $raw ) ) {
+			return $raw;
+		}
+		$raw = strtolower( sanitize_text_field( (string) $raw ) );
+		return in_array( $raw, array( '1', 'true', 'yes', 'on' ), true );
 	}
 
 	/**
@@ -1607,8 +1659,9 @@ class SMIG_Admin {
 
 		$state = array(
 			'phase'            => 'create_staging',
-			'apply_version'    => 2,
+			'apply_version'    => 3,
 			'reset_admin_user' => $reset_admin,
+			'wporg_errors'     => array(),
 			'custom_target_url' => ! empty( $target_urls['custom'] ),
 			'tables'         => $tables,
 			'src_prefix'     => $manifest['prefix'],
@@ -1626,11 +1679,16 @@ class SMIG_Admin {
 			'current'      => '',
 		);
 
-		set_transient( 'smig_apply_' . $sid, $state, 4 * HOUR_IN_SECONDS );
+		if ( empty( $state['apply_token'] ) ) {
+			$state['apply_token'] = wp_generate_password( 48, false );
+		}
+
+		self::save_apply_state( $sid, $state );
 		self::save_resume(
 			array(
 				'apply_started' => true,
 				'status'        => 'applying',
+				'session_id'    => $sid,
 			)
 		);
 		return $state;
@@ -1651,7 +1709,10 @@ class SMIG_Admin {
 			self::ensure_resume_for_staged_download( $staged_info );
 		}
 
-		$resume = get_option( SMIG_RESUME_OPTION, array() );
+		$resume = self::read_resume_file();
+		if ( empty( $resume ) ) {
+			$resume = get_option( SMIG_RESUME_OPTION, array() );
+		}
 		if ( ! is_array( $resume ) ) {
 			$resume = array();
 		}
@@ -1662,7 +1723,7 @@ class SMIG_Admin {
 		}
 
 		$dl_state    = ( '' !== $sid ) ? get_transient( 'smig_session_' . $sid ) : false;
-		$apply_state = ( '' !== $sid ) ? get_transient( 'smig_apply_' . $sid ) : false;
+		$apply_state = ( '' !== $sid ) ? self::load_apply_state( $sid ) : false;
 
 		if ( ! $has_staging && ! $dl_state && ! $apply_state && ! $staged_ready ) {
 			self::clear_resume();
@@ -1720,6 +1781,9 @@ class SMIG_Admin {
 			'manifest_stats'    => $resume['manifest_stats'] ?? array(),
 			'resume_download'   => (bool) $dl_state && ! $download_complete,
 			'resume_apply'      => (bool) $apply_state,
+			'apply_token'       => is_array( $apply_state ) ? (string) ( $apply_state['apply_token'] ?? '' ) : '',
+			'reset_admin_user'  => is_array( $apply_state ) && ! empty( $apply_state['reset_admin_user'] ),
+			'db_swapped'        => is_array( $apply_state ) && ! empty( $apply_state['db_swapped'] ),
 			'expired'           => $expired,
 			'staged_ready'      => $staged_ready,
 			'can_apply_staged'  => $staged_ready && ! $apply_state,
@@ -1727,15 +1791,129 @@ class SMIG_Admin {
 	}
 
 	private static function save_resume( array $data ) {
-		$existing = get_option( SMIG_RESUME_OPTION, array() );
+		$existing = self::read_resume_file();
 		if ( ! is_array( $existing ) ) {
 			$existing = array();
 		}
-		update_option( SMIG_RESUME_OPTION, array_merge( $existing, $data, array( 'updated' => time() ) ), false );
+		$merged = array_merge( $existing, $data, array( 'updated' => time() ) );
+		self::write_resume_file( $merged );
+		update_option( SMIG_RESUME_OPTION, $merged, false );
 	}
 
 	private static function clear_resume() {
 		delete_option( SMIG_RESUME_OPTION );
+		if ( defined( 'SMIG_RESUME_FILE' ) && is_readable( SMIG_RESUME_FILE ) ) {
+			wp_delete_file( SMIG_RESUME_FILE );
+		}
+	}
+
+	/**
+	 * @return array
+	 */
+	private static function read_resume_file() {
+		if ( ! defined( 'SMIG_RESUME_FILE' ) || ! is_readable( SMIG_RESUME_FILE ) ) {
+			return array();
+		}
+		$data = json_decode( (string) file_get_contents( SMIG_RESUME_FILE ), true );
+		return is_array( $data ) ? $data : array();
+	}
+
+	/**
+	 * @param array $data Resume payload.
+	 */
+	private static function write_resume_file( array $data ) {
+		self::ensure_staging_secure();
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		file_put_contents( SMIG_RESUME_FILE, wp_json_encode( $data ) );
+	}
+
+	/**
+	 * @param string $sid Session id.
+	 * @return string
+	 */
+	private static function apply_state_file_path( $sid ) {
+		$sid = preg_replace( '/[^a-zA-Z0-9_-]/', '', (string) $sid );
+		return trailingslashit( SMIG_APPLY_STATE_DIR ) . $sid . '.json';
+	}
+
+	/**
+	 * Persist apply progress on disk so it survives the DB swap (options/transients are replaced).
+	 *
+	 * @param string $sid   Session id.
+	 * @param array  $state Apply state.
+	 */
+	private static function save_apply_state( $sid, array $state ) {
+		self::ensure_staging_secure();
+		wp_mkdir_p( SMIG_APPLY_STATE_DIR );
+
+		$path = self::apply_state_file_path( $sid );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		file_put_contents( $path, wp_json_encode( $state ) );
+
+		if ( empty( $state['db_swapped'] ) ) {
+			set_transient( 'smig_apply_' . $sid, $state, 4 * HOUR_IN_SECONDS );
+		}
+	}
+
+	/**
+	 * @param string $sid Session id.
+	 * @return array|false
+	 */
+	private static function load_apply_state( $sid ) {
+		$path = self::apply_state_file_path( $sid );
+		if ( is_readable( $path ) ) {
+			$data = json_decode( (string) file_get_contents( $path ), true );
+			if ( is_array( $data ) ) {
+				return $data;
+			}
+		}
+
+		$transient = get_transient( 'smig_apply_' . $sid );
+		return is_array( $transient ) ? $transient : false;
+	}
+
+	/**
+	 * @param string $sid Session id.
+	 */
+	private static function delete_apply_state( $sid ) {
+		$path = self::apply_state_file_path( $sid );
+		if ( is_readable( $path ) ) {
+			wp_delete_file( $path );
+		}
+		delete_transient( 'smig_apply_' . $sid );
+	}
+
+	/**
+	 * After DB swap the WordPress login cookie is invalid; continue apply via apply_token.
+	 *
+	 * @param array|false $state       Apply state.
+	 * @param string      $apply_token Token from client.
+	 * @return bool True when authorized.
+	 */
+	private static function verify_apply_chunk_auth( $state, $apply_token ) {
+		if ( is_array( $state ) && ! empty( $state['db_swapped'] ) && ! empty( $state['apply_token'] ) ) {
+			if ( '' !== $apply_token && hash_equals( (string) $state['apply_token'], $apply_token ) ) {
+				return true;
+			}
+			wp_send_json_error(
+				array(
+					'message' => __(
+						'Apply session lost after database replace. Reload this page — if the wizard does not resume, use the recovery link from your last apply response or the Site Migrator recovery link on wp-login.',
+						'site-migrator'
+					),
+					'code'    => 'apply_token_required',
+				)
+			);
+			return false;
+		}
+
+		check_ajax_referer( 'smig_nonce', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+			return false;
+		}
+
+		return true;
 	}
 
 	private static function sync_resume_from_download( $state ) {
@@ -1766,6 +1944,8 @@ class SMIG_Admin {
 				'apply_started' => true,
 				'progress'      => min( $pct, 100 ),
 				'current'       => $state['current'] ?? '',
+				'apply_token'      => $state['apply_token'] ?? '',
+				'reset_admin_user' => ! empty( $state['reset_admin_user'] ),
 			)
 		);
 	}
@@ -1807,9 +1987,10 @@ class SMIG_Admin {
 	}
 
 	/**
-	 * URL fixes and prefix repair immediately after the table swap (single atomic DB cutover).
+	 * URL fixes, prefix repair, and optional admin/password reset after the table swap.
 	 *
 	 * @param array $state Apply state (by reference).
+	 * @return null|WP_Error
 	 */
 	private static function apply_post_swap_updates( &$state ) {
 		global $wpdb;
@@ -1888,16 +2069,68 @@ class SMIG_Admin {
 		}
 
 		++$state['done'];
+		$state['phase'] = 'cleanup';
 
-		$manifest    = json_decode( file_get_contents( SMIG_STAGING_DIR . '/manifest.json' ), true );
-		$wporg_queue = $manifest['wporg_queue'] ?? array();
-		if ( ! empty( $wporg_queue ) ) {
-			$state['phase']       = 'install_wporg';
-			$state['wporg_idx']   = 0;
-			$state['wporg_queue'] = $wporg_queue;
-		} else {
-			$state['phase'] = 'cleanup';
+		return self::finish_admin_access_after_swap( $state );
+	}
+
+	/**
+	 * Retry WordPress.org installs and drop active_plugins entries whose files are still missing.
+	 *
+	 * @param array $state Apply state.
+	 */
+	private static function reconcile_plugins_after_apply( $state ) {
+		$queue = $state['wporg_queue'] ?? array();
+		if ( ! empty( $queue ) ) {
+			SMIG_Plugin_Strategy::install_wporg_queue( $queue );
+			SMIG_Plugin_Strategy::activate_wporg_queue_plugins( $queue );
 		}
+
+		$active = get_option( 'active_plugins', array() );
+		if ( ! is_array( $active ) ) {
+			return;
+		}
+
+		$valid = array();
+		foreach ( $active as $plugin_file ) {
+			if ( ! is_string( $plugin_file ) || '' === $plugin_file ) {
+				continue;
+			}
+			if ( ! is_readable( WP_PLUGIN_DIR . '/' . $plugin_file ) ) {
+				continue;
+			}
+			if ( SMIG_Plugin_Strategy::is_incompatible_on_single_site( $plugin_file ) ) {
+				continue;
+			}
+			$valid[] = $plugin_file;
+		}
+
+		if ( count( $valid ) !== count( $active ) ) {
+			update_option( 'active_plugins', $valid );
+		}
+	}
+
+	/**
+	 * Public wrapper: install plugins from manifest wporg_queue (recovery CLI).
+	 *
+	 * @return array{installed: string[], failed: array<string, string>}|WP_Error
+	 */
+	public static function install_wporg_from_manifest_public() {
+		$manifest_file = SMIG_STAGING_DIR . '/manifest.json';
+		if ( ! file_exists( $manifest_file ) ) {
+			return new WP_Error(
+				'no_manifest',
+				__( 'No manifest.json in migrator-staging. Re-download or keep staging until plugins are installed.', 'site-migrator' )
+			);
+		}
+
+		$manifest = json_decode( file_get_contents( $manifest_file ), true );
+		$queue    = $manifest['wporg_queue'] ?? array();
+
+		$result = SMIG_Plugin_Strategy::install_wporg_queue( $queue );
+		SMIG_Plugin_Strategy::activate_wporg_queue_plugins( $queue );
+
+		return $result;
 	}
 
 	/**
@@ -2131,21 +2364,11 @@ class SMIG_Admin {
 			);
 		}
 
-		require_once ABSPATH . 'wp-admin/includes/user.php';
-
 		$host  = wp_parse_url( home_url(), PHP_URL_HOST );
 		$host  = $host ? $host : 'localhost';
 		$email = 'admin@' . preg_replace( '/[^a-zA-Z0-9.-]/', '', $host );
 
-		$user_ids = $wpdb->get_col( "SELECT ID FROM {$wpdb->users}" );
-		if ( is_array( $user_ids ) ) {
-			foreach ( $user_ids as $uid ) {
-				if ( function_exists( 'wp_delete_user' ) ) {
-					wp_delete_user( (int) $uid, true );
-				}
-			}
-		}
-
+		// Direct SQL only: after a DB swap the logged-in session often cannot delete_users.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$wpdb->query( "DELETE FROM {$wpdb->usermeta}" );
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
@@ -2176,9 +2399,8 @@ class SMIG_Admin {
 		clean_user_cache( $user_id );
 		wp_cache_flush();
 
-		if ( class_exists( 'WP_Session_Tokens' ) ) {
-			WP_Session_Tokens::destroy_all_for_all_users();
-		}
+		// Do not destroy all sessions during apply — the browser may still need the apply_token
+		// for post-swap AJAX; wp_set_auth_cookie runs after reset when apply finishes admin step.
 
 		self::ensure_sole_user_admin_mu_plugin();
 
@@ -2477,6 +2699,9 @@ class SMIG_Admin {
 
 	private static function ensure_staging_secure() {
 		wp_mkdir_p( SMIG_STAGING_DIR );
+		if ( defined( 'SMIG_APPLY_STATE_DIR' ) ) {
+			wp_mkdir_p( SMIG_APPLY_STATE_DIR );
+		}
 
 		$index = SMIG_STAGING_DIR . '/index.php';
 		if ( ! file_exists( $index ) ) {
@@ -2486,6 +2711,17 @@ class SMIG_Admin {
 		$htaccess = SMIG_STAGING_DIR . '/.htaccess';
 		if ( ! file_exists( $htaccess ) ) {
 			file_put_contents( $htaccess, "Deny from all\n" );
+		}
+
+		if ( defined( 'SMIG_APPLY_STATE_DIR' ) && is_dir( SMIG_APPLY_STATE_DIR ) ) {
+			$apply_index = SMIG_APPLY_STATE_DIR . '/index.php';
+			if ( ! file_exists( $apply_index ) ) {
+				file_put_contents( $apply_index, "<?php\n// Silence is golden.\n" );
+			}
+			$apply_htaccess = SMIG_APPLY_STATE_DIR . '/.htaccess';
+			if ( ! file_exists( $apply_htaccess ) ) {
+				file_put_contents( $apply_htaccess, "Deny from all\n" );
+			}
 		}
 	}
 

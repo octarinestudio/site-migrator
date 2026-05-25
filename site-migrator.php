@@ -25,6 +25,8 @@ define( 'SMIG_VERSION', '1.0.0' );
 define( 'SMIG_PATH', plugin_dir_path( __FILE__ ) );
 define( 'SMIG_URL', plugin_dir_url( __FILE__ ) );
 define( 'SMIG_STAGING_DIR', WP_CONTENT_DIR . '/migrator-staging' );
+define( 'SMIG_APPLY_STATE_DIR', SMIG_STAGING_DIR . '/.apply-state' );
+define( 'SMIG_RESUME_FILE', SMIG_STAGING_DIR . '/.resume.json' );
 define( 'SMIG_ROWS_PER_PAGE', 500 );
 define( 'SMIG_FILES_PER_BATCH', 50 );
 define( 'SMIG_MAX_FILE_SIZE', 25 * 1024 * 1024 );

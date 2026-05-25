@@ -14,6 +14,7 @@
 		sourceUrl: '',
 		sourceAuth: '',
 		sessionId: '',
+		applyToken: '',
 		verified: false,
 		downloadComplete: false,
 		migrationActive: false,
@@ -704,6 +705,7 @@
 			$.extend(
 				{
 					session_id: state.sessionId,
+					apply_token: state.applyToken || '',
 					reset_admin_user: $('#smig-opt-reset-admin').is(':checked')
 						? '1'
 						: '0',
@@ -720,10 +722,20 @@
 							: 'Apply failed.'
 					);
 					setButtonLoading($btn, 'smig-apply-spinner', false);
+					setApplyRunning(false);
 					return;
 				}
 
 				var d = res.data;
+				if (d.apply_token) {
+					state.applyToken = d.apply_token;
+				}
+				if (d.db_swapped && d.apply_token) {
+					showNotice(
+						'info',
+						'Database replaced. Apply will continue automatically (your login session may refresh).'
+					);
+				}
 				$('#smig-apply-bar').val(d.progress);
 				$('#smig-apply-text').text(
 					d.progress +
@@ -762,6 +774,18 @@
 								d.recovery_url
 						);
 					}
+					if (d.wporg_errors && typeof d.wporg_errors === 'object') {
+						var failed = Object.keys(d.wporg_errors)
+							.map(function (slug) {
+								return slug + ': ' + d.wporg_errors[slug];
+							})
+							.join('; ');
+						showNotice(
+							'error',
+							'Some WordPress.org plugins could not be installed. Run: php wp-content/plugins/site-migrator/bin/install-wporg-plugins.php — ' +
+								failed
+						);
+					}
 					return;
 				}
 
@@ -783,6 +807,10 @@
 		var r = smig.resume;
 		state.sourceUrl = r.source_url || '';
 		state.sessionId = r.session_id || '';
+		state.applyToken = r.apply_token || '';
+		if (typeof r.reset_admin_user !== 'undefined') {
+			$('#smig-opt-reset-admin').prop('checked', !!r.reset_admin_user);
+		}
 		state.verified = true;
 		state.downloadComplete = !!r.download_complete;
 

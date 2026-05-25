@@ -153,7 +153,16 @@ class SMIG_Plugin_Strategy {
 	public static function install_from_wporg( $slug, $version ) {
 		self::load_upgrader_deps();
 
-		$slug    = sanitize_key( $slug );
+		$slug = sanitize_key( $slug );
+		if ( '' === $slug ) {
+			return new WP_Error( 'wporg_install_failed', 'Invalid plugin slug.' );
+		}
+
+		$local = self::local_plugins_by_slug();
+		if ( isset( $local[ $slug ] ) ) {
+			return true;
+		}
+
 		$package = self::wporg_zip_url( $slug, $version );
 
 		$skin     = new Automatic_Upgrader_Skin();
@@ -185,6 +194,116 @@ class SMIG_Plugin_Strategy {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Install plugins from a WordPress.org queue (manifest wporg_queue).
+	 *
+	 * @param array $queue List of arrays with slug, version, name.
+	 * @return array{installed: string[], failed: array<string, string>}
+	 */
+	public static function install_wporg_queue( $queue ) {
+		$installed = array();
+		$failed    = array();
+
+		if ( ! is_array( $queue ) ) {
+			return array(
+				'installed' => $installed,
+				'failed'    => $failed,
+			);
+		}
+
+		foreach ( $queue as $plugin ) {
+			$slug = isset( $plugin['slug'] ) ? sanitize_key( $plugin['slug'] ) : '';
+			if ( '' === $slug ) {
+				continue;
+			}
+			$version = isset( $plugin['version'] ) ? (string) $plugin['version'] : '';
+			$result  = self::install_from_wporg( $slug, $version );
+			if ( is_wp_error( $result ) ) {
+				$failed[ $slug ] = $result->get_error_message();
+			} else {
+				$installed[] = $slug;
+			}
+		}
+
+		return array(
+			'installed' => $installed,
+			'failed'    => $failed,
+		);
+	}
+
+	/**
+	 * Whether a plugin must not run on a single-site target (network-only / multisite SSO, etc.).
+	 *
+	 * @param string $plugin_file Plugin basename relative to wp-content/plugins.
+	 */
+	public static function is_incompatible_on_single_site( $plugin_file ) {
+		if ( is_multisite() ) {
+			return false;
+		}
+
+		$plugin_file = ltrim( (string) $plugin_file, '/' );
+		if ( '' === $plugin_file || ! is_readable( WP_PLUGIN_DIR . '/' . $plugin_file ) ) {
+			return false;
+		}
+
+		self::load_plugin_deps();
+		$data = get_plugin_data( WP_PLUGIN_DIR . '/' . $plugin_file, false, false );
+
+		if ( ! empty( $data['Network'] ) ) {
+			return true;
+		}
+
+		$slug = self::slug_from_plugin_file( $plugin_file );
+		if ( false !== strpos( $slug, 'multisite' ) ) {
+			return true;
+		}
+
+		$description = isset( $data['Description'] ) ? (string) $data['Description'] : '';
+		if ( false !== stripos( $description, 'multisite installation' ) ) {
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Activate plugins from wporg_queue when their files exist (post-migration recovery).
+	 *
+	 * @param array $queue wporg_queue from manifest.
+	 * @return string[] Plugin basenames activated.
+	 */
+	public static function activate_wporg_queue_plugins( $queue ) {
+		self::load_plugin_deps();
+		if ( ! function_exists( 'activate_plugin' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		$activated = array();
+		if ( ! is_array( $queue ) ) {
+			return $activated;
+		}
+
+		foreach ( $queue as $plugin ) {
+			$file = isset( $plugin['file'] ) ? ltrim( (string) $plugin['file'], '/' ) : '';
+			if ( '' === $file || ! is_readable( WP_PLUGIN_DIR . '/' . $file ) ) {
+				continue;
+			}
+			if ( self::is_incompatible_on_single_site( $file ) ) {
+				continue;
+			}
+			if ( is_plugin_active( $file ) ) {
+				$activated[] = $file;
+				continue;
+			}
+			$result = activate_plugin( $file, '', false, true );
+			if ( ! is_wp_error( $result ) ) {
+				$activated[] = $file;
+			}
+		}
+
+		return $activated;
 	}
 
 	/**
