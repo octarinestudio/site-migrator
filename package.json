@@ -15,7 +15,7 @@
 		"@babel/core": "^7.29.0",
 		"@babel/eslint-parser": "^7.28.6",
 		"@wordpress/env": "^11.6.0",
-		"@wordpress/eslint-plugin": "^22.22.0",
+		"@wordpress/eslint-plugin": "^25.3.0",
 		"eslint": "^8.57.1",
 		"eslint-plugin-jsx-a11y": "^6.10.2",
 		"eslint-plugin-react": "^7.37.5",
