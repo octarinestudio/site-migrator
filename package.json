@@ -12,7 +12,7 @@
 		"wp-env:cli": "wp-env run cli"
 	},
 	"devDependencies": {
-		"@babel/core": "^7.29.0",
+		"@babel/core": "^7.29.7",
 		"@babel/eslint-parser": "^7.28.6",
 		"@wordpress/env": "^11.6.0",
 		"@wordpress/eslint-plugin": "^22.22.0",
